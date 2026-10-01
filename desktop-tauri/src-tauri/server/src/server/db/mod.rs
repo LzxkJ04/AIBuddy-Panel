@@ -97,7 +97,7 @@ pub const FILE_NAME: &str = "aibuddy-panel.db";
 
 /// 旧版数据文件名（v2.11.0 前的 aibuddy-panel.db）——启动时自动迁移到新名，
 /// 保证既有数据无感升级（文件连同 -wal/-shm 一起改名，不复制不留旧文件）。
-pub const LEGACY_FILE_NAME: &str = "aibuddy-panel.db";
+pub const LEGACY_FILE_NAME: &str = "agent2api.db";
 
 /// 旧数据文件自动迁移：`old` 存在且 `new` 缺失 → 连同 -wal/-shm 改名。
 /// 独立函数便于测试；幂等（任一条件不满足即无操作）。
