@@ -290,12 +290,33 @@ pub fn shim_js() -> &'static str {
       return httpCall(request.method || 'GET', request.path || '/', request.body);
     },
     check_update: function () {
-      // 网页端走镜像更新（拉新镜像重启容器），不提供安装包下载
-      return Promise.resolve({
-        currentVersion: 'web', latestVersion: 'web', hasUpdate: false,
-        notes: '网页端通过 Docker 镜像更新：拉取新镜像后重启容器即可。',
-        publishedAt: '', pageUrl: '', installerKind: 'none',
-      });
+      // 网页端：走网关的 /api/update/check（服务端查 GitHub Releases 最新 tag，
+      // 与本地版本号比较），真实返回 hasUpdate；安装包下载仍走镜像更新路径
+      // 当前版本取自 /api/update/status（登录后可读，就是本服务编译进二进制的版本）
+      return call('GET', '/api/update/status').then(function (st) {
+        var cur = (st && st.data && st.data.currentVersion) || '';
+        return call('GET', '/api/update/check?current=' + encodeURIComponent(cur));
+      }).then(function (env) {
+        var d = (env && env.data) || {};
+        return {
+          currentVersion: d.currentVersion || '',
+            latestVersion: d.latestVersion || '',
+            hasUpdate: !!d.hasUpdate,
+            notes: d.hasUpdate
+              ? '发现新版本 ' + (d.latestVersion || '') + '。更新方式：docker pull '
+                + 'ghcr.io/lzxkj04/aibuddy-panel:latest 后重启容器（或使用 Release 附带的镜像包）'
+              : (d.notes || '已是最新版本。网页端更新走 Docker 镜像：拉取新镜像后重启容器即可。'),
+            publishedAt: d.publishedAt || '',
+            pageUrl: d.pageUrl || 'https://github.com/LzxkJ04/AIBuddy-Panel/releases',
+            installerKind: 'none',
+          };
+        })
+        .catch(function () {
+          return {
+            currentVersion: CURRENT_VERSION || '', latestVersion: '', hasUpdate: false,
+            notes: '检查失败：无法连接 GitHub。', publishedAt: '', pageUrl: '', installerKind: 'none',
+          };
+        });
     },
     get_update_status: function () { return call('GET', '/api/update/status'); },
     backend_status: function () {
