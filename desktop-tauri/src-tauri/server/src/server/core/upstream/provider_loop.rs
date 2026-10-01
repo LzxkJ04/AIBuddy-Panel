@@ -907,6 +907,12 @@ async fn attempt_queue(
                         && attempt_prompt.mode.degradable()
                     {
                         degraded = true;
+            crate::server::core::notify::notify_account_event(
+                provider_id,
+                &attempt_account,
+                "degrade",
+                "内容策略拦截触发降级，已换中性提示词重试一次",
+            );
                         // 触发状态机（已在降级期内则不续期，返回原来的截止时刻）
                         crate::server::core::degrade::trigger();
                         let until_text = crate::server::core::degrade::until_text();
@@ -1093,6 +1099,12 @@ async fn attempt_queue(
                                     let message = format!(
                                         "{}（所有候选账号对模型 {model} 均已限额或禁用）",
                                         failure.error.message
+                                    );
+                                    crate::server::core::notify::notify_account_event(
+                                        provider_id,
+                                        model,
+                                        "account_offline",
+                                        &message,
                                     );
                                     rotate::report_limit_event(
                                         "error",

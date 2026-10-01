@@ -31,7 +31,7 @@ use axum::extract::Request;
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get, patch, post};
+use axum::routing::{any, get, patch, post, put, delete};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
@@ -85,6 +85,23 @@ pub fn panel_router(state: ServerState) -> Router {
         // 凭证（setup / login），要么凭证本身就是它们的主张（refresh 带
         // refresh cookie、logout 撤自己的会话），挂 public 由端点自理。
         .route("/api/audit", get(api::audit_api::query_audit))
+        .route(
+            "/api/keys/{id}/quota",
+            get(api::key_quota_api::get_quota).put(api::key_quota_api::put_quota),
+        )
+        .route(
+            "/api/notify/channels",
+            get(api::notify_api::get_channels).post(api::notify_api::create_channel),
+        )
+        .route(
+            "/api/notify/channels/{id}",
+            put(api::notify_api::update_channel).delete(api::notify_api::delete_channel),
+        )
+        .route("/api/notify/test", post(api::notify_api::test_channel))
+        .route(
+            "/api/notify/alerts",
+            get(api::notify_api::get_alerts).put(api::notify_api::put_alerts),
+        )
         .route("/api/sessions/list", get(api::sessions_api::list_sessions))
         .route("/api/sessions/revoke", post(api::sessions_api::revoke_session))
         .route(

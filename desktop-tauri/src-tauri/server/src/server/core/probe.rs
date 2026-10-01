@@ -724,6 +724,12 @@ async fn run_round(store: &AccountStore, settings: &ProbeSettings, trigger: &str
                             );
                             disabled.push(id.clone());
                             failures.insert(id.clone(), Value::from(0));
+                            crate::server::core::notify::notify_account_event(
+                                provider,
+                                &label,
+                                "probe_disabled",
+                                &format!("探活连续 {count} 次失败，已自动停用"),
+                            );
                         }
                         Err(error) => {
                             logging::log(

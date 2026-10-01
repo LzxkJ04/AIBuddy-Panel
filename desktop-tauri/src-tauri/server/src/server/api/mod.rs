@@ -64,7 +64,9 @@ pub mod health;
 // `core::import_ccswitch`）
 pub mod import_sources;
 pub mod keys_api;
+pub mod key_quota_api;
 pub mod logs_api;
+pub mod notify_api;
 pub mod maintenance_api;
 pub mod model_manage;
 pub mod models;
