@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import {
   Badge,
   Button,
+  buttonVariants,
   Dialog,
   DialogBody,
   DialogContent,
@@ -17,6 +18,7 @@ import {
   Switch,
   type MultiSelectOption,
 } from '@ui'
+import { toDataURL } from 'qrcode'
 import { TableFooter, useClientPaging } from './table-shell'
 
 /**
@@ -577,7 +579,7 @@ function KeyModal({ target, providers, modelsByProvider, onClose, onSaved }: Key
   )
 }
 
-/* ─── 快速接入弹窗（带真实 Key 的客户端接入配置）── */
+/* ─── 快速接入弹窗（带真实 Key 的客户端接入配置 + 接入二维码）── */
 
 /** 三段配置的分段标识（分段控件受控值） */
 type QuickTabKind = 'openai' | 'curl' | 'anthropic'
@@ -632,6 +634,80 @@ function quickSnippet(kind: QuickTabKind, base: string, key: string): string {
         `export ANTHROPIC_AUTH_TOKEN=${key}`,
       ].join('\n')
   }
+}
+
+/**
+ * 二维码的载荷：三行接入信息文本（标识 / Base / Key 明文）。手机相机与各客户端的
+ * 「扫一扫导入」认的是**纯文本**，不搞私有 JSON —— 扫出来就能照着填。
+ */
+function quickQrPayload(base: string, key: string): string {
+  return `AIBuddy Panel\nBase: ${base}/v1\nKey: ${key}`
+}
+
+/** 二维码展示尺寸（px）；卡片另有白底内边距与描边，整体略大 */
+const QR_SIZE = 180
+
+/** 下载文件名：Key 名洗掉路径非法字符（中文原样保留，浏览器自己会转码） */
+function qrFileNameOf(name: string): string {
+  const safe = name.replace(/[\\/:*?"<>|]+/g, '-').trim() || 'key'
+  return `aibuddy-key-${safe}.png`
+}
+
+/**
+ * 快速接入弹窗里的二维码卡。生成走 `qrcode` 的 toDataURL（canvas → PNG DataURL，
+ * 纯前端），不引任何服务端依赖。为什么源图生成 512px 而展示只给 180px：下载出去的
+ * PNG 也要能扫 —— 180px 打印 / 截图后再放大会糊，512px 缩着展示依然锐利。
+ *
+ * 二维码**本体永远白底黑模块**（color 写死）：扫码器对反色 / 深底容错很差，深色
+ * 主题下也不许跟着换色；主题自适应的只有外层描边（--border / --r-md，走 tokens）。
+ */
+function QuickQrCard({ payload, fileName }: { payload: string; fileName: string }) {
+  const [url, setUrl] = React.useState('')
+  const [failed, setFailed] = React.useState(false)
+
+  React.useEffect(() => {
+    // toDataURL 是异步的 canvas 渲染：卸载 / 载荷变化后不再写回旧结果
+    let alive = true
+    setFailed(false)
+    toDataURL(payload, {
+      margin: 2,
+      width: 512,
+      errorCorrectionLevel: 'M',
+      color: { dark: '#000000', light: '#FFFFFF' },
+    })
+      .then(next => { if (alive) setUrl(next) })
+      .catch(() => { if (alive) setFailed(true) })
+    return () => { alive = false }
+  }, [payload])
+
+  return (
+    <div className='flex flex-wrap items-start gap-3'>
+      {/* 白底内边距就是 quiet zone 的兜底：哪怕截图裁掉一圈，模块周围仍有留白可扫 */}
+      <div className='rounded-[var(--r-md)] border border-[var(--border)] bg-white p-2'>
+        {url ? (
+          <img src={url} width={QR_SIZE} height={QR_SIZE} alt='接入信息二维码（Base URL 与 Key）'
+            className='block size-[180px]' />
+        ) : (
+          <div className='grid size-[180px] place-items-center text-[11.5px] text-neutral-500'>
+            {failed ? '二维码生成失败' : '二维码生成中…'}
+          </div>
+        )}
+      </div>
+      <div className='flex min-w-[160px] flex-1 flex-col items-start gap-2'>
+        <p>手机扫码即得 Base URL 与 Key，适合在手机端快速配置客户端。</p>
+        {/* 下载走 a[download]：DataURL 同源可直接落盘；DataURL 没就绪前先禁点
+            （buttonVariants 只出样式串，禁用态在这里手工补） */}
+        <a
+          className={`${buttonVariants({ variant: 'outline', size: 'sm' })}${url ? '' : ' pointer-events-none opacity-45'}`}
+          href={url || undefined}
+          download={fileName}
+          aria-disabled={!url}
+        >
+          下载 PNG
+        </a>
+      </div>
+    </div>
+  )
 }
 
 function QuickAccessModal({ target, onClose }: { target: KeyEntry; onClose: () => void }) {
@@ -702,6 +778,16 @@ function QuickAccessModal({ target, onClose }: { target: KeyEntry; onClose: () =
               Base URL 取当前页面地址（{base}）；跨机访问时换成网关所在主机的地址。
             </p>
           </DialogSection>
+          {/* 扫码接入只在明文在手时出现：没有真实 Key 的二维码扫了也没用（与上面
+              片段的回退文案同一口径 —— 明文缺失时整个区块整段让位，不摆空壳 */}
+          {keyValue ? (
+            <DialogSection>
+              <h3>扫码接入</h3>
+              <QuickQrCard payload={quickQrPayload(base, keyValue)}
+                fileName={qrFileNameOf(target.name || '')} />
+              <p>⚠ 二维码内含 Key 明文，转发截图前先想想它会落到谁手里。</p>
+            </DialogSection>
+          ) : null}
         </DialogBody>
         <DialogFooter>
           <div className='mr-auto' />

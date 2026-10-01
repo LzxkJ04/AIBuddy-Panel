@@ -3,7 +3,7 @@
    右侧抽屉 · 四个页签：
      外观  主题三卡（真 SVG 图标）/ 深色侧栏 / 深色顶栏 / 顶栏渐变 /
            灰色模式 / 色弱模式 / 12 色主题板（圆点 + 名称）/ 自定义主题色
-     布局  布局模式四卡（迷你布局示意图）/ 内容宽度 /
+     布局  布局模式四卡（迷你布局示意图）/ 内容宽度 / 界面密度三档（紧凑·默认·宽松）/
            侧栏（Logo 显示 / 选中菜单高亮条 / 折叠时隐藏分组标题）
      通用  动态标题 / 页面切换进度条 / 面包屑 / 页脚版权 / 页签栏显隐 /
            页面切换动画（无·淡入·滑入）/ 通知轮询间隔 / 水印
@@ -28,6 +28,7 @@
     darkTopbar: false,
     primary: '',              // 空 = 用 tokens.css 默认紫罗兰
     contentWidth: 'fluid',    // fluid | boxed
+    density: 'default',       // 界面密度：compact | default | relaxed（default = 现状）
     dynamicTitle: true,
     progressbar: true,
     layout: 'vertical',       // 布局模式：当前只有 vertical 真实生效
@@ -49,6 +50,7 @@
     // 越界值一律拉回合法档位，防止脏数据把界面锁死
     if (['light', 'dark', 'system'].indexOf(p.theme) < 0) p.theme = 'system';
     if (['fluid', 'boxed'].indexOf(p.contentWidth) < 0) p.contentWidth = 'fluid';
+    if (['compact', 'default', 'relaxed'].indexOf(p.density) < 0) p.density = 'default';
     if (p.layout !== 'vertical') p.layout = 'vertical'; // 其余形态尚未支持
     if (['', 'gray', 'weak'].indexOf(p.filter) < 0) p.filter = '';
     if (['none', 'fade', 'slide'].indexOf(p.pageAnim) < 0) p.pageAnim = 'none';
@@ -167,6 +169,7 @@
     root.setAttribute('data-pref-sidebar', prefs.darkSidebar ? 'dark' : 'light');
     root.setAttribute('data-pref-topbar', prefs.darkTopbar ? 'dark' : 'light');
     root.setAttribute('data-pref-width', prefs.contentWidth);
+    root.setAttribute('data-pref-density', prefs.density);
     root.setAttribute('data-pref-layout', prefs.layout);
     root.setAttribute('data-pref-filter', prefs.filter || '');
     root.setAttribute('data-pref-anim', prefs.pageAnim || 'none');
@@ -814,6 +817,23 @@
           });
         body.appendChild(wc);
         body.appendChild(hint('两种宽度都实时预览，右上角齿轮里随时切换。'));
+        body.appendChild(section('界面密度'));
+        // 分段控件（与「页面切换动画」同款 .pref-seg）：默认档 = 本面板原始密度，
+        // 选完即存即用（apply() 把档位挂到 html 的 data-pref-density，prefs.css 出三套规则）
+        var dc = el('div', 'pref-seg');
+        [['compact', '紧凑'], ['default', '默认'], ['relaxed', '宽松']].forEach(function (o) {
+          var b = el('button', prefs.density === o[0] ? 'on' : '');
+          b.type = 'button';
+          b.textContent = o[1];
+          b.addEventListener('click', function () {
+            prefs.density = o[0]; save(prefs); apply();
+            dc.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); });
+            b.classList.add('on');
+          });
+          dc.appendChild(b);
+        });
+        body.appendChild(dc);
+        body.appendChild(hint('紧凑收紧全局留白与面板行高，宽松放大呼吸感；默认即原始密度，实时生效。'));
         body.appendChild(section('侧栏'));
         body.appendChild(row('显示 Logo', toggle(function () { return prefs.isShowLogo; },
           function (v) { prefs.isShowLogo = v; save(prefs); apply(); }),

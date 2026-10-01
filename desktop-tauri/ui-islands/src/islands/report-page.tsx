@@ -1,12 +1,13 @@
 import * as React from 'react'
 import { createRoot } from 'react-dom/client'
 import {
+  Button,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
   SegmentedControl, type SegmentedControlOption,
 } from '@ui'
 import {
   RANGES, DEFAULT_RANGE, RANGE_KEY, RANGE_LABEL, RANGE_OPTION_LABEL,
-  readRange, round1,
+  readRange, round1, formatPercent,
   overviewCells, rankRows, rankTotalText, donutView,
   heatmapView, heatLegendItems, heatThresholdsOf, cacheRateCells,
   cacheTrendView, dailyTrendView,
@@ -55,6 +56,13 @@ import {
  * 的各拍会被跳过，恢复可见（visibilitychange）立即补拉一次，切回本页的那次拉取仍由
  * app.js 的 showPage 负责。兜底 1 秒 = 后端的默认间隔。
  *
+ * ── 导出 CSV ──────────────────────────────────────────────────
+ * 统计概览卡头上那枚按钮把**当前范围**的报表数据（概览 / 按天序列 / Top 模型 /
+ * 提供商 / 账号）拼成**一份多段 CSV** 下载：\uFEFF BOM + 逗号 + \r\n，每段前有
+ * `# 标题` 注释行，Excel 双击即读。列按后端实际给的字段裁剪（按天序列没有
+ * 成功数与输入 / 输出、缓存命中，就不造列），数值一律原始整数 —— 不走 units
+ * 缩写，CSV 是拿去再加工的，格式化过的数字没法 SUM。
+ *
  * ── 坑：带 Tailwind display 工具类的元素上 hidden 无效 ─────────
  * 组件库的工具类是分层 + !important 的，tokens.css 的 `[hidden] { display:none !important }`
  * 未分层；按 Cascade 5，important 的层序反转 —— 分层压过未分层。所以「字段缺失就整块藏起来」
@@ -92,6 +100,8 @@ type SharedWindow = {
     readonly currentPage?: string
     /** 主状态（账号表）：排行卡里的提供商徽章按账号 id 现查归属 */
     getState?: () => { accounts?: { accounts?: AccountLike[] } } | null
+    /** 全局 toast（app.js）：导出完成 / 失败的轻提示走它 */
+    toast?: (message: string, kind?: string) => void
   }
   /** 提供商展示名目录（labelOf：后端 label → 目录 → 原样回显 id） */
   wbProviders?: { labelOf?: (provider: string) => string }
@@ -229,6 +239,224 @@ function ProviderBadge({ accountId }: { accountId: string }) {
   const suffix = (account && shared().wbAccountsModel?.editionSuffix?.(account)) || ''
   const text = suffix ? `${label} ${suffix}` : label
   return <span className={`pbadge p-${provider}`} title={`提供商：${text}`}>{text}</span>
+}
+
+/* ─── CSV 导出 ────────────────────────────── */
+
+/** toast 的统一出口（运行期读 wbApp，与 logs-panel / accounts-shared 同一做法） */
+function toast(message: string, kind?: string): void {
+  shared().wbApp?.toast?.(message, kind)
+}
+
+/** 本地日期 `YYYY-MM-DD`：文件名与「导出时间」共用（不用 toISOString，那是 UTC 日期） */
+function csvStamp(at: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+}
+
+/** 本地时刻 `YYYY-MM-DD HH:mm:ss`：报表信息段里的「导出时间」 */
+function csvFullStamp(at: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${csvStamp(at)} ${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`
+}
+
+/** 文件名里的范围段：原始档位值换成更好认的英文标签（缺的就用地传值） */
+const RANGE_FILE_TAG: Record<string, string> = {
+  today: 'today', 7: '7days', 30: '30days', month: 'month', all: 'all',
+}
+
+/** `aibuddy-report-<范围>-<日期>.csv`（与 models-page 的 aibuddy-models-<日期>.json 同一套前缀） */
+function reportCsvFilename(rangeKey: string, now: Date): string {
+  const tag = (RANGE_FILE_TAG[rangeKey] || rangeKey).replace(/[^a-zA-Z0-9_-]+/g, '-')
+  return `aibuddy-report-${tag}-${csvStamp(now)}.csv`
+}
+
+/**
+ * CSV 单元格转义：含逗号 / 引号 / 换行的字段用双引号包裹、内部引号翻倍
+ * （RFC 4180 的最小实现；模型名 / 账号名理论上是任意串，不能裸拼）。
+ */
+function csvCell(value: string): string {
+  return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value
+}
+
+/** 一行 CSV：逗号拼接 + `\r\n` 行尾（与 BOM 配套，Excel 打开才不会挤成一列） */
+function csvLine(cells: readonly string[]): string {
+  return `${cells.map(csvCell).join(',')}\r\n`
+}
+
+/**
+ * 数值单元格：原始数字字符串（NaN / 缺字段按 0）。不做千分位也不做单位缩写 ——
+ * 千分位逗号会撞上分隔符，缩写后的「1.2万」没法 SUM。
+ */
+function csvInt(value: unknown): string {
+  return String(Number(value) || 0)
+}
+
+/** 可缺省的数值单元格：后端没给这个字段就留空（写 0 会被读成「全部失败」） */
+function csvOptInt(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : ''
+}
+
+/**
+ * 排行段的行构建。名字按「label → model → id → 兜底」取（与环形图同一兜底
+ * 次序）；Token 读 totalTokens、缺了退 tokens（与 rankRows 同一口径）。
+ *
+ * `failures` 后端确实在 providers / accounts 里给了，但 report-charts 的公共
+ * 契约类型没声明它 —— 本文件不能改那份类型，用局部窄类型补读（多出来的字段
+ * 不影响既有消费，缺了就是空单元格）。
+ */
+type StatsGroupRow = StatsGroup & { failures?: number }
+
+function groupCsvRows(list: StatsGroup[] | undefined, unknownLabel: string): {
+  name: string; requests: string; success: string; failures: string; tokens: string
+}[] {
+  return (Array.isArray(list) ? list : []).map(item => {
+    const row = item as StatsGroupRow | undefined
+    return {
+      name: String(row?.label ?? row?.model ?? row?.id ?? '').trim() || unknownLabel,
+      requests: csvInt(row?.requests),
+      success: csvOptInt(row?.success),
+      failures: csvOptInt(row?.failures),
+      tokens: csvInt(row?.totalTokens ?? row?.tokens),
+    }
+  })
+}
+
+/**
+ * 当前 summary 里有没有可导出的数据。
+ *
+ * 只认**随范围变化的读数**：请求数、按天序列、三个 Top 维度任一非零即算有。
+ * 热力图（固定 365 天）与缓存窗口（固定 24h / 7d）是后端补零出来的常驻数据，
+ * 不能拿来判断「所选范围有没有东西」—— 否则按钮永远不会禁用。
+ */
+function reportHasData(summary: StatsSummary): boolean {
+  if ((Number(summary.overview?.requests) || 0) > 0) return true
+  if ((Array.isArray(summary.dailyTrend) ? summary.dailyTrend : []).some(
+    day => (Number(day?.requests) || 0) > 0 || (Number(day?.tokens) || 0) > 0,
+  )) return true
+  return [summary.models, summary.providers, summary.accounts].some(list =>
+    (Array.isArray(list) ? list : []).some(
+      item => (Number(item?.requests) || 0) > 0
+        || (Number(item?.totalTokens ?? item?.tokens) || 0) > 0,
+    ))
+}
+
+/**
+ * 把一份 summary 拼成多段 CSV 文本（串首带 `\uFEFF` BOM）。
+ *
+ * ── 段的取舍（数据口径）─────────────────────────────────────
+ * 只导**随所选范围变化**的数据：报表信息 / 统计概览 / 按天用量 / 三个 Top 维度。
+ * 热力图（固定 365 天）、缓存命中率四窗口、近 24 小时趋势都是**固定窗口**，
+ * 与所选范围无关 —— 混进一份「按范围导出」的文件里会被误读成范围内的数字，
+ * 所以不导。Top 账号在后端没这一维（undefined）时整段省略，与页面整块隐藏
+ * 同一口径；空数组是「这一维没数据」，给空态行。
+ *
+ * ── 列按实际字段裁剪 ────────────────────────────────────────
+ * 按天序列只有 日期 / 请求数 / Token：后端的按天聚合就不带成功数、
+ * 输入 / 输出拆分与缓存命中，造不出列。providers / accounts 带
+ * success / failures，就多给两列（旧后端没给就留空，不写 0）；models 不带，
+ * 保持 模型 / 请求数 / Token 三列。
+ *
+ * 行序沿用后端返回（请求数降序 → Token 降序 → 身份升序），不重排 ——
+ * 与页面同源同序，对账时两边逐行对得上。
+ */
+function buildReportCsv(summary: StatsSummary, rangeKey: string, now: Date): string {
+  const lines: string[] = []
+  const overview = summary.overview || {}
+  const requests = Number(overview.requests) || 0
+  const successful = Number(overview.successful) || 0
+
+  // ── 段 1：报表信息 ──
+  lines.push(csvLine(['# 报表信息']))
+  lines.push(csvLine(['项目', '值']))
+  lines.push(csvLine(['导出时间', csvFullStamp(now)]))
+  lines.push(csvLine(['时间范围', RANGE_LABEL[rangeKey] || rangeKey]))
+  lines.push(csvLine(['数据区间', `${summary.startDate || '—'} ～ ${summary.endDate || '—'}`]))
+
+  // ── 段 2：统计概览 ──
+  lines.push(csvLine(['# 统计概览']))
+  lines.push(csvLine(['指标', '数值']))
+  lines.push(csvLine(['总请求数', String(requests)]))
+  lines.push(csvLine(['成功请求数', String(successful)]))
+  // 失败数由减法得出（后端各维度同口径，max(0) 兜手改数据）
+  lines.push(csvLine(['失败请求数', String(Math.max(0, requests - successful))]))
+  lines.push(csvLine(['总 Token', csvInt(overview.tokens)]))
+  lines.push(csvLine(['活跃天数', csvInt(overview.activeDays)]))
+  lines.push(csvLine(['当前连续天数', csvInt(overview.streak)]))
+  const top = overview.topModel
+  if (top) {
+    lines.push(csvLine(['Top 模型', String(top.model ?? '')]))
+    lines.push(csvLine(['Top 模型 Token', csvInt(top.tokens)]))
+    lines.push(csvLine(['Top 模型占比', formatPercent(top.percentage)]))
+  }
+
+  // ── 段 3：按天用量 ──
+  lines.push(csvLine(['# 按天用量']))
+  lines.push(csvLine(['日期', '请求数', 'Token']))
+  const days = Array.isArray(summary.dailyTrend) ? summary.dailyTrend : []
+  if (days.length) {
+    for (const day of days) {
+      lines.push(csvLine([String(day?.date ?? ''), csvInt(day?.requests), csvInt(day?.tokens)]))
+    }
+  } else {
+    lines.push(csvLine(['（所选范围内暂无按天数据）']))
+  }
+
+  // ── 段 4：Top 模型 ──
+  lines.push(csvLine(['# Top 模型']))
+  lines.push(csvLine(['模型', '请求数', 'Token']))
+  const modelRows = groupCsvRows(summary.models, '未知模型')
+  if (modelRows.length) {
+    for (const row of modelRows) {
+      lines.push(csvLine([row.name, row.requests, row.tokens]))
+    }
+  } else {
+    lines.push(csvLine(['（所选范围内暂无模型用量）']))
+  }
+
+  // ── 段 5：Top 提供商 ──
+  lines.push(csvLine(['# Top 提供商']))
+  lines.push(csvLine(['提供商', '请求数', '成功数', '失败数', 'Token']))
+  const providerRows = groupCsvRows(summary.providers, '未知')
+  if (providerRows.length) {
+    for (const row of providerRows) {
+      lines.push(csvLine([row.name, row.requests, row.success, row.failures, row.tokens]))
+    }
+  } else {
+    lines.push(csvLine(['（所选范围内暂无提供商用量）']))
+  }
+
+  // ── 段 6：Top 账号（维度缺失 = 后端版本旧，整段省略）──
+  if (Array.isArray(summary.accounts)) {
+    lines.push(csvLine(['# Top 账号']))
+    lines.push(csvLine(['账号', '请求数', '成功数', '失败数', 'Token']))
+    const accountRows = groupCsvRows(summary.accounts, '未知账号')
+    if (accountRows.length) {
+      for (const row of accountRows) {
+        lines.push(csvLine([row.name, row.requests, row.success, row.failures, row.tokens]))
+      }
+    } else {
+      lines.push(csvLine(['（所选范围内暂无账号用量）']))
+    }
+  }
+
+  return `\uFEFF${lines.join('')}`
+}
+
+/**
+ * Blob 下载（与 models-page 的清单导出同一套手法）。anchor.click() 后把 revoke
+ * 挪到下一轮 —— 个别内核在 click 的同步处理里还要读地址，立刻 revoke 会下到 0 字节。
+ */
+function downloadCsv(filename: string, content: string): void {
+  const blob = new Blob([content], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
 /* ─── 板块一：统计概览 ────────────────────── */
@@ -780,6 +1008,34 @@ function ReportPage() {
   const trendView = summary ? cacheTrendView(cacheTrendHours, trendWidth[1]) : null
   const dailyView = summary ? dailyTrendView(dailyDays, dailyWidth[1]) : null
 
+  /* ─── 导出 CSV ────────────────────────── */
+
+  /** 有没有可导出的数据：加载中 / 读取失败（summary 为空）与空范围一样禁用按钮 */
+  const hasExportData = !!summary && reportHasData(summary)
+  /**
+   * 按钮的悬停说明，挂在外层 span 的 title 上：组件库的禁用按钮是
+   * pointer-events-none，悬停事件到不了按钮自身，title 挂在它上面永远弹不出来；
+   * 禁用时悬停穿透过来到 span，正好接得住。可导出时给一句范围说明。
+   */
+  const exportHint = !summary
+    ? '报表数据尚未加载完成，加载后才能导出'
+    : hasExportData
+      ? `导出当前范围（${RANGE_LABEL[rangeKey] || rangeKey}）的报表数据为 CSV`
+      : '所选范围内暂无可导出的数据'
+
+  /** 导出当前 summary：拼 CSV → Blob 下载 → toast 报文件名；失败给 err toast */
+  const exportCsv = React.useCallback(() => {
+    if (!summary) return
+    try {
+      const now = new Date()
+      const filename = reportCsvFilename(rangeKey, now)
+      downloadCsv(filename, buildReportCsv(summary, rangeKey, now))
+      toast(`✅ 已导出报表：${filename}`)
+    } catch (error) {
+      toast(`导出 CSV 失败：${error instanceof Error ? error.message : String(error)}`, 'err')
+    }
+  }, [summary, rangeKey])
+
   return (
     <>
       {/* ── 统计概览 ──
@@ -814,6 +1070,16 @@ function ReportPage() {
             </Select>
             <span className='panel-sub' style={{ fontVariantNumeric: 'tabular-nums' }}>
               上次刷新 {lastRefreshAt ? clockText(lastRefreshAt) : '—'}
+            </span>
+            {/* ── 导出 CSV ──
+                数据源就是本页已拉到的 summary（不另打接口）；空范围 / 加载中禁用，
+                原因看外层 span 的 title（禁用按钮 pointer-events-none，title 得挂外层）。
+                variant / size 与 docs 页头部按钮同一档（outline + sm），深浅主题随令牌走。 */}
+            <span title={exportHint} className='inline-flex'>
+              <Button variant='outline' size='sm' disabled={!hasExportData}
+                onClick={exportCsv} aria-label='导出报表数据为 CSV'>
+                导出 CSV
+              </Button>
             </span>
           </div>
         </div>

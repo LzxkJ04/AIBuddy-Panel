@@ -4,7 +4,8 @@
    色板圆点+名称 / 开关行 / 分段选择 / 页脚（含「检查更新」按钮）/
    顶栏图标钮 / 页面快速跳转搜索 / 进度条 / 欢迎横幅（含账号池摘要 chip）/
    Toast / 水印 / 灰色·色弱滤镜 / 页面切换动画 / 局部深色侧栏顶栏 / 顶栏渐变 /
-   面包屑·Logo·分组标题·页签栏显隐 / 菜单高亮条 / 版权页脚 / 锁屏遮罩 / 手机端适配
+   面包屑·Logo·分组标题·页签栏显隐 / 菜单高亮条 / 版权页脚 / 锁屏遮罩 / 手机端适配 /
+   界面密度三档（紧凑·默认·宽松，--pad + .panel 内边距行高 + .nav-item 高度）
    颜色一律走 tokens.css 变量，深色主题自动成立。
    ───────────────────────────────────────────── */
 
@@ -325,6 +326,29 @@ html[data-pref-anim="slide"] .page.active { animation: prefPageSlide .3s cubic-b
 
 /* ── 布局变体（偏好驱动，挂 data-pref-* 属性）── */
 :root[data-pref-width="boxed"] .content-inner { max-width: 1200px; margin: 0 auto; }
+
+/* ── 界面密度三档（data-pref-density，偏好抽屉「布局 → 界面密度」）──
+   默认档不写任何规则 = 面板原始密度。只动三个作用域：全局 --pad 令牌、
+   .panel 内部结构行的内边距与 .panel 行高、.nav-item 最小高度，其余布局一概不碰。
+   .panel 自身没有内边距（面板头 / 工具条 / 面板体 / 底注各带一层，边线要通到面板
+   两缘），所以「.panel 内边距」按 .panel 后代的结构行收放。
+   --pad 的改档只在宽屏（>1000px）生效：≤1000px 的移动端留白由下方媒体查询专门管
+   （14px / 12px 两档），密度档不在小屏跟它抢。 */
+@media (min-width: 1001px) {
+  html[data-pref-density="compact"] { --pad: 14px; }
+  html[data-pref-density="relaxed"] { --pad: 26px; }
+}
+html[data-pref-density="compact"] .panel { line-height: 1.45; }
+html[data-pref-density="compact"] .panel .panel-head,
+html[data-pref-density="compact"] .panel .toolbar { padding: 8px 12px; }
+html[data-pref-density="compact"] .panel .panel-body { padding: 10px 12px; }
+html[data-pref-density="compact"] .panel .panel-foot { padding: 7px 12px; }
+html[data-pref-density="compact"] .sidebar .nav-item { min-height: 42px; }
+html[data-pref-density="relaxed"] .panel { line-height: 1.7; }
+html[data-pref-density="relaxed"] .panel .panel-head,
+html[data-pref-density="relaxed"] .panel .toolbar { padding: 14px 18px; }
+html[data-pref-density="relaxed"] .panel .panel-body { padding: 16px 20px; }
+html[data-pref-density="relaxed"] .panel .panel-foot { padding: 11px 18px; }
 
 /* 深色侧栏 / 深色顶栏：独立于整体主题的局部深色 */
 :root[data-pref-sidebar="dark"] .sidebar {

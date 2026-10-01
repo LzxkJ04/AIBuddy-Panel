@@ -61,7 +61,7 @@ import {
 } from '@ui'
 import { TableFooter, useClientPaging } from './table-shell'
 import { shared, type AccountRecord, type ColSettingsHandle } from './accounts-shared'
-import { checkinableAccounts, isDesktopAccount, isEnabled, isRateLimited, supportsUsage } from './accounts-domain'
+import { checkinableAccounts, isDesktopAccount, isEnabled, isRateLimited, supportsUsage, tokenExpiryOf } from './accounts-domain'
 import { ACCOUNT_COLUMNS, bindColumnGrips, columnWidths } from './accounts-columns'
 import {
   allAccounts, checkinAll, clearLimits, clearSelection, ensureProxyPoolOptions,
@@ -126,6 +126,68 @@ function syncHead(): void {
   })
 }
 
+/* ─── 凭据临期预警 ─────────────────────────── */
+
+/** 「临期」阈值：剩余有效期不足 7 天 */
+const EXPIRY_SOON_MS = 7 * 24 * 3600e3
+/** 「即将过期」阈值：剩余有效期不足 3 天 */
+const EXPIRY_URGENT_MS = 3 * 24 * 3600e3
+
+/**
+ * 凭据临期判定（单一口径，三处共用：「有效期」列徽章、状态条「临期」chip）。
+ *
+ * 过期时间读域层的 tokenExpiryOf（按 provider 特征选 expiresAt / tokenExpiresAt，
+ * 与 accounts-panels 的 ExpiryCell 同一字段口径 —— 见该组件注释「与域层的
+ * tokenExpiryOf 同口径」）。返回值：
+ *   'expired' 已过期（含刚好卡在到期时刻）/ 'urgent' 不足 3 天 / 'soon' 不足 7 天；
+ * 时间戳缺 0 / 非有限数 = 解析失败，返回 null 不预警（与 ExpiryCell 的「—」同待遇）。
+ */
+function expiryTier(account: AccountRecord): 'expired' | 'urgent' | 'soon' | null {
+  const expiresAt = tokenExpiryOf(account)
+  if (!expiresAt) return null
+  const left = expiresAt - Date.now()
+  if (left <= 0) return 'expired'
+  if (left < EXPIRY_URGENT_MS) return 'urgent'
+  if (left < EXPIRY_SOON_MS) return 'soon'
+  return null
+}
+
+/** 临期徽章文案与悬停说明（全中文；expired 档由 ExpiryCell 自带的红色「已过期」徽章承担） */
+const EXPIRY_TIER_TEXT = {
+  urgent: { label: '即将过期', title: '凭据剩余有效期不足 3 天，请尽快续期或重新登录' },
+  soon: { label: '临期', title: '凭据剩余有效期不足 7 天' },
+} as const
+
+/**
+ * 临期徽章样式（<style> 随页面渲染一次，规则全部圈在 .acct-expiry-* 名下）。
+ * 颜色走 tokens.css 的 --warn / --danger 三件套（前景 / 柔和底 / 描边），深浅主题自动跟随；
+ * 徽章叠在「有效期」列剩余时间文字上方（列宽只有 80px，横排放不下两段）。
+ */
+const EXPIRY_BADGE_CSS = `
+.acct-expiry-wrap {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+.acct-expiry-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 17px;
+  padding: 0 7px;
+  border: 1px solid var(--warn-bd);
+  border-radius: var(--r-pill);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+.acct-expiry-badge.urgent { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-bd); }
+`
+
 /* ─── 账号池状态条 ─────────────────────────── */
 
 /**
@@ -181,6 +243,8 @@ const POOL_BAR_CSS = `
 .acct-pool-chip.warn { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-bd); }
 .acct-pool-chip.warn:hover:not(:disabled) { background: var(--warn-soft); border-color: var(--warn); }
 .acct-pool-chip.mute { color: var(--text-3); }
+/* 纯读数 chip（「临期」）：没有对应的筛选维度，不可点，只保留同款外观 */
+.acct-pool-chip.static { cursor: default; }
 .acct-pool-chip.on { color: var(--primary-fg); background: var(--primary-soft); border-color: var(--primary-bd); }
 .acct-pool-chip.on:hover:not(:disabled) { background: var(--primary-soft); border-color: var(--primary-bd); }
 @media (max-width: 767px) {
@@ -209,7 +273,7 @@ function PoolChip(props: {
 
 /**
  * 「账号池状态条」：把全局优先级候选链的现状摆成一行计数 —— 总数 / 启用 / 停用 /
- * 限流冷却 / 各提供商，插在工具栏上方。
+ * 限流冷却 / 临期（凭据 <7 天，纯读数）/ 各提供商，插在工具栏上方。
  *
  * 计数**全部由页面内存里的同一份账号列表现算**（allAccounts()，与表格同源），
  * 不发任何额外请求；数据加载与轮询（app.js 的 refresh → wbAccountsView.render、
@@ -229,6 +293,9 @@ function AccountPoolBar() {
   // 冷却，与工具栏「已限流」分段（filterCounts 的 limited）同一算法 —— 点 chip 看到
   // 的列表条数就是这个数。
   const cooldownCount = all.filter(account => isEnabled(account) && isRateLimited(account)).length
+  // 「临期」：凭据剩余有效期不足 7 天（含已过期）的账号数，与「有效期」列的临期徽章
+  // 同一判定（expiryTier）。N>0 才显示；没有对应的筛选维度，做成纯读数 chip。
+  const expiringCount = all.filter(account => expiryTier(account) !== null).length
   // 只列**有账号**的家（与批量栏的 provider-summary 同一取舍：0 家的 chip 不提供信息）
   const providerChips = providerSummaryList().filter(item => item.count > 0)
 
@@ -257,6 +324,14 @@ function AccountPoolBar() {
             if (getStore().filter.enabled === 'disabled') setSegmentFilter('enabled', 'all')
             setSegmentFilter('limit', getStore().filter.limit === 'limited' ? 'all' : 'limited')
           }} />
+        {expiringCount > 0 ? (
+          <span className='acct-pool-chip warn static'
+            title='剩余有效期不足 7 天（含已过期）的账号数，与「有效期」列徽章同口径'>
+            <span className='acct-pool-dot' aria-hidden='true' />
+            临期
+            <b>{expiringCount}</b>
+          </span>
+        ) : null}
         {providerChips.length > 0 ? <span className='acct-pool-divider' aria-hidden='true' /> : null}
         {providerChips.map(item => (
           <PoolChip key={item.id} tone='mute' title={`只看 ${item.label} 的账号`}
@@ -379,8 +454,20 @@ function AccountsPage() {
         return <StatusCell account={account} />
       case 'limits':
         return <LimitsCell account={account} open={ctx.limitsOpen} />
-      case 'expiry':
-        return <ExpiryCell account={account} />
+      case 'expiry': {
+        // 临期徽章：urgent（<3 天，红）/ soon（<7 天，黄）叠在剩余时间上方；
+        // expired 档 ExpiryCell 本来就渲染红色「已过期」徽章，不再叠一枚重复的；
+        // 解析失败（无时间戳 / 非法值）不显示
+        const tier = expiryTier(account)
+        if (!tier || tier === 'expired') return <ExpiryCell account={account} />
+        const badge = EXPIRY_TIER_TEXT[tier]
+        return (
+          <span className='acct-expiry-wrap'>
+            <span className={cn('acct-expiry-badge', tier)} title={badge.title}>{badge.label}</span>
+            <ExpiryCell account={account} />
+          </span>
+        )
+      }
       case 'usage':
         return <UsageCell account={account} />
       case 'actions':
@@ -395,6 +482,8 @@ function AccountsPage() {
 
   return (
     <>
+      {/* 临期徽章样式（「有效期」列用，随页面渲染一次；账号池状态条的样式在其组件里） */}
+      <style>{EXPIRY_BADGE_CSS}</style>
       <section className='panel account-table'>
         {/* 账号池状态条（候选链总览）：在工具栏上方，计数与筛选都和工具栏联动 */}
         <AccountPoolBar />
