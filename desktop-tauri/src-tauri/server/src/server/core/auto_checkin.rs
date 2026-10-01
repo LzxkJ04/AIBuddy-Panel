@@ -461,8 +461,15 @@ impl AutoCheckin {
                         "failedCount": 1,
                     }
                 }));
-                logging::log("[Checkin]", &format!("❌ 定时签到失败: {}", error.message));
-                None
+                // 上游对「今天已签到」回 HTTP 400 —— 这是正常状态不是失败，
+                // 归类为 info 免得面板把它当错误展示
+                if error.message.contains("已签到") {
+                    logging::log("[Checkin]", &format!("ℹ️ 定时签到：今日已签到（上游确认）"));
+                    None
+                } else {
+                    logging::log("[Checkin]", &format!("❌ 定时签到失败: {}", error.message));
+                    None
+                }
             }
         };
         drop(guard);

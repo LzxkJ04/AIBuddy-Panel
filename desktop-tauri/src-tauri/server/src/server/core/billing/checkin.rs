@@ -300,7 +300,12 @@ fn claim_result(
             json!({ "id": id, "name": name, "claim": claim, "error": Value::Null })
         }
         Err(message) => {
-            logging::verbose("[Accounts]", &format!("账号 {id} 签到失败: {message}"));
+            // 「今天已签到」是正常状态：info 级展示，不算失败
+            if message.contains("已签到") {
+                logging::log("[Accounts]", &format!("账号 {id}: 今日已签到"));
+            } else {
+                logging::verbose("[Accounts]", &format!("账号 {id} 签到失败: {message}"));
+            }
             json!({
                 "id": id,
                 "name": name,
