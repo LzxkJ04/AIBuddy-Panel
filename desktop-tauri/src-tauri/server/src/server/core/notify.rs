@@ -1270,7 +1270,7 @@ async fn send_bitrix24(config: &Value, title: &str, body: &str) -> Result<(), St
 /// config：`brevoApiKey` / `brevoToEmail` / `brevoFromEmail`（必填）、
 /// `brevoFromName` / `brevoSubject`（可选）、`brevoCcEmail` / `brevoBccEmail`
 /// （可选，逗号分隔）。
-async fn send_brevo(config: &Value, title: &str, body: &str) -> Result<(), String> {
+async fn send_brevo(config: &Value, _title: &str, body: &str) -> Result<(), String> {
     const KIND: &str = "brevo";
     let key = require_field(config, &["brevoApiKey"], KIND, "brevoApiKey")?;
     let to = require_field(config, &["brevoToEmail"], KIND, "brevoToEmail")?;
