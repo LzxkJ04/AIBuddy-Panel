@@ -163,6 +163,20 @@ export type SharedWindow = {
   wbUpdatePanel?: { load?: () => Promise<void> | void }
   /** 内联图标集（icons.js）：左栏分类图标由它渲染（返回 SVG 串，注入用） */
   wbIcons?: { icon?: (name: string, size?: number) => string }
+  /** 页签栏（tags-view.js）的官方外部出口：closeAll 是「全部关闭」的同一份实现 */
+  wbTagsView?: {
+    open?(page: string): void
+    close?(page: string): void
+    closeAll?(): void
+    list?(): string[]
+  }
+  /** 通知中心（notify-center.js）的官方外部出口：open / refresh / unread 都是真的 */
+  wbNotifyCenter?: {
+    refresh?(): void
+    open?(): void
+    close?(): void
+    unread?(): number
+  }
 }
 
 export function shared(): SharedWindow {
@@ -215,6 +229,12 @@ export async function openExternal(url: string): Promise<void> {
  * 「更新」（原「关于」）**id 保持 `about` 不变**：它同时是 update-panel.tsx 的挂载点
  * 选择器（`.settings-pane[data-cat="about"]`）与用户 localStorage 里存着的分类值，
  * 改名会让两者当场失配 —— 用户看到的只是标签，id 是内部契约。
+ *
+ * 「偏好与外观」（prefs）与「通知与页签」（shell）把最近新增的外壳功能（偏好抽屉 /
+ * 页签栏 / 通知中心）纳入后台设置：这两栏管的全是**本机偏好**（localStorage 的
+ * aibuddy-prefs / aibuddy-tags / aibuddy-notify-read 等），与后端配置无关，所以排在
+ * 「数据」之后、「部署信息」之前 —— 后端类的分类看完，再看本机观感类的收尾。
+ * 图标沿用 icons.js 里现成的描边图标（sliders 与「通用」同款、feedback 与「反馈」同款）。
  */
 export const CATEGORIES = [
   { id: 'general', label: '通用', icon: 'sliders' },
@@ -225,6 +245,8 @@ export const CATEGORIES = [
   { id: 'timeout', label: '超时', icon: 'timer' },
   { id: 'security', label: '安全', icon: 'shield' },
   { id: 'data', label: '数据', icon: 'database' },
+  { id: 'prefs', label: '偏好与外观', icon: 'sliders' },
+  { id: 'shell', label: '通知与页签', icon: 'feedback' },
   { id: 'deploy', label: '部署信息', icon: 'pulse' },
   { id: 'feedback', label: '反馈与需求', icon: 'feedback' },
   { id: 'about', label: '更新', icon: 'download' },
@@ -313,6 +335,134 @@ export function readZoomPercent(): number {
   } catch {
     return 100
   }
+}
+
+/* ─── 外壳偏好（「偏好与外观」「通知与页签」两分类的键与口径） ── */
+
+/**
+ * 外壳功能的存储键（与 ui/js/prefs.js / notify-center.js / tags-view.js 逐字同源 ——
+ * 那边都是封闭 IIFE，两边只能靠「同一份键名」对齐，改一处必然要改另一处）。
+ *
+ * ⚠ prefs.js **不监听**任何事件：'aibuddy-prefs-changed' 只是它每次 apply() 之后在
+ * document 上派发的广播（今天没有任何监听者）。所以设置页改完偏好后「立即生效」
+ * 由设置页自己做 —— 逐条镜像 apply() 对这批键的 DOM 效果（见 settings-page 的
+ * applyShellPrefs），壳下次加载时从 localStorage 读到同一批值重新应用，两边不会漂。
+ * 这里照样派发同款事件（detail 是整份偏好）：维持「改了偏好就广播」的既定契约，
+ * 留给未来的监听者，而不是假装壳会替我们重应用。
+ */
+export const PREFS_KEY = 'aibuddy-prefs'
+export const PREFS_EVENT = 'aibuddy-prefs-changed'
+/** 锁屏「正在锁定」标记：prefs.js boot 时读到 '1' 就恢复锁屏遮罩；解锁时移除 */
+export const PREFS_LOCK_ACTIVE_KEY = 'aibuddy-lockscreen-active'
+/** 通知中心已读水位：{id, ts}（notify-center.js 读写；清掉即「按当前事件重算已读」） */
+export const NOTIFY_READ_KEY = 'aibuddy-notify-read'
+/** 页签清单（tags-view.js 读写，数组 of page id；overview 永远第一且不可关闭） */
+export const TAGS_KEY = 'aibuddy-tags'
+export const TAGS_HOME = 'overview'
+/** 内容区全屏（tags-view.js：藏侧栏 / 顶栏 / 页签栏，Esc 退出）'1' = 开 */
+export const CONTENT_MAX_KEY = 'aibuddy-content-max'
+
+/**
+ * 偏好存档（aibuddy-prefs）里本页管理的键。字段名与 prefs.js 的 DEFAULTS 一致；
+ * 本页不管理的键（如 layout）读写时原样保留，不会冲掉用户在抽屉里配过的值。
+ */
+export type ShellPrefs = {
+  theme: 'light' | 'dark' | 'system'
+  darkSidebar: boolean
+  darkTopbar: boolean
+  /** 空 = 用 tokens.css 默认紫罗兰 */
+  primary: string
+  contentWidth: 'fluid' | 'boxed'
+  dynamicTitle: boolean
+  progressbar: boolean
+  watermark: boolean
+  /** '' | gray | weak（互斥，与 prefs.js sanitize 同一口径） */
+  filter: '' | 'gray' | 'weak'
+  pageAnim: 'none' | 'fade' | 'slide'
+  isBreadcrumb: boolean
+  isFooter: boolean
+  isShowLogo: boolean
+  isGroupLabel: boolean
+  topbarGradient: boolean
+  menuHighlight: boolean
+  lockScreen: { enabled: boolean; password: string; minutes: number }
+}
+
+/**
+ * 偏好归一化（镜像 prefs.js 的 sanitize：越界值拉回合法档位，缺省补默认）。
+ * 缺省值与 DEFAULTS / sanitize 逐字对齐：三个「默认开」的项（动态标题 / 进度条 /
+ * 面包屑 / Logo / 分组标题）missing 时按开，其余按关。
+ */
+export function normalizeShellPrefs(raw: unknown): ShellPrefs {
+  const p = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const bool = (value: unknown, fallback: boolean): boolean =>
+    value === undefined || value === null ? fallback : Boolean(value)
+  const lock = (p.lockScreen && typeof p.lockScreen === 'object' ? p.lockScreen : {}) as Record<string, unknown>
+  const minutes = Math.floor(Number(lock.minutes))
+  return {
+    theme: p.theme === 'light' || p.theme === 'dark' ? p.theme : 'system',
+    darkSidebar: p.darkSidebar === true,
+    darkTopbar: p.darkTopbar === true,
+    primary: typeof p.primary === 'string' ? p.primary : '',
+    contentWidth: p.contentWidth === 'boxed' ? 'boxed' : 'fluid',
+    dynamicTitle: bool(p.dynamicTitle, true),
+    progressbar: bool(p.progressbar, true),
+    watermark: p.watermark === true,
+    filter: p.filter === 'gray' || p.filter === 'weak' ? p.filter : '',
+    pageAnim: p.pageAnim === 'fade' || p.pageAnim === 'slide' ? p.pageAnim : 'none',
+    isBreadcrumb: bool(p.isBreadcrumb, true),
+    isFooter: p.isFooter === true,
+    isShowLogo: bool(p.isShowLogo, true),
+    isGroupLabel: bool(p.isGroupLabel, true),
+    topbarGradient: p.topbarGradient === true,
+    menuHighlight: p.menuHighlight === true,
+    lockScreen: {
+      enabled: lock.enabled === true,
+      password: typeof lock.password === 'string' ? lock.password : '',
+      minutes: Number.isFinite(minutes) && minutes > 0 ? Math.min(minutes, 1440) : 0,
+    },
+  }
+}
+
+/** 12 色内置主题板（prefs.js PRIMARY_PRESETS 的逐字副本 —— 两处共用一份口径） */
+export const PRIMARY_PRESETS: ReadonlyArray<readonly [string, string]> = [
+  ['#2563eb', '默认蓝'], ['#7c5cfc', '紫罗兰'], ['#ec4899', '樱花粉'],
+  ['#eab308', '柠檬黄'], ['#3b82f6', '天蓝'], ['#10b981', '浅绿'],
+  ['#3f3f46', '锌灰'], ['#0d9488', '深绿'], ['#1d4ed8', '深蓝'],
+  ['#f97316', '橙黄'], ['#e11d48', '玫红'], ['#27272a', '中性'],
+]
+
+/** 默认主题色（prefs.js 自定义取色器的回落值，也是「恢复默认」的目标） */
+export const PRIMARY_DEFAULT = '#7c5cfc'
+
+/** 内容宽度档位（value 与 prefs.js 存档值逐字一致） */
+export const SHELL_CONTENT_WIDTHS = [
+  { value: 'fluid', label: '流式（跟随窗口宽度）' },
+  { value: 'boxed', label: '定宽（1200px 版心）' },
+] as const
+
+/** 页面切换动画档位（value 与 prefs.js 存档值逐字一致） */
+export const SHELL_PAGE_ANIMS = [
+  { value: 'none', label: '无（默认）' },
+  { value: 'fade', label: '淡入' },
+  { value: 'slide', label: '滑入' },
+] as const
+
+/**
+ * 页签 id → 文案（tags-view.js LABELS 的镜像，仅展示用：页签栏自己优先取侧栏导航
+ * 上的现成文案，这里取不到 DOM 时兜底；两处改动需同步）。
+ */
+export const SHELL_TAG_LABELS: Record<string, string> = {
+  overview: '报表',
+  accounts: '账号',
+  gateway: '模型管理',
+  proxies: '网络代理',
+  keys: '网关 Key',
+  docs: '文档',
+  logs: '日志',
+  tasks: '定时任务',
+  requests: '请求日志',
+  settings: '设置',
 }
 
 /* ─── 数字字段表 ───────────────────────────── */
@@ -577,6 +727,13 @@ export const TIPS = {
   io: '导出会把全部账号与自定义提供商定义写入一个 JSON 文件，可以拷到另一台机器上导入后继续使用。导入采用合并策略：同提供商下按业务身份（UID / userId / apiKey 等）去重 —— 已存在的账号只更新凭证，保留本机原有的优先级顺序；新账号追加到转发顺序末尾，不会抢占当前正在使用的账号；自定义提供商定义按 id 合并，本机缺失时自动补建。',
   retention: '三类数据各自独立计时，超出保留天数的部分会被删除：事件日志是登录、账号切换、429 切换这类系统事件；请求日志是网关每次转发到上游的逐条记录；按天聚合供报表页的热力图与按天趋势使用。把某一档改小（例如 30 天改成 7 天）保存后会立即删除超出的历史数据，此操作不可恢复；改大或保持不变不会删除任何数据。三项的可填范围均为 1–3650 天。',
   storage: '全部数据（账号、事件日志、请求记录、调试报文、设置）统一保存在配置目录下的 agent2api.db 这一个 SQLite 数据库里。备份时只需拷贝这个文件；更换保存位置请设置环境变量 AGENT2API_PROXY_HOME 后重启程序。',
+  /* ── 偏好与外观 / 通知与页签（本次新增：外壳偏好，与 ui/js/prefs.js 同源）── */
+  prefsDrawer: '打开右上角齿轮同款的「偏好设置」抽屉：四个页签（外观 / 布局 / 通用 / 锁屏）里有全部偏好项目，外加「复制偏好 / 导入偏好 / 恢复默认」三个批量动作。抽屉与本页读写的是同一份本机配置，两边改动的值互相可见（抽屉每次打开都会重读）。',
+  prefsTheme: '与「显示 → 显示模式」、侧边栏底部的主题三键、偏好抽屉是同一个设置的几个入口：浅色 / 深色把界面固定在该模式，「跟随系统」随操作系统的深浅自动切换并即时跟上，窗口标题栏的深浅色一并同步。这里改动会同时写进应用主题与偏好存档两处，下次启动按同一值打开，不会互相顶掉。',
+  prefsPrimary: '界面主色：按钮、选中态、链接、开关等主色元素立即换色。内置 12 色点击即用；「自定义」取色器可选任意颜色；「恢复默认」回到内置紫罗兰（#7c5cfc）。主色只在本机生效（保存在浏览器偏好里），悬停、柔和底、描边等衍生色按当前深浅主题自动计算，无需逐个调整。',
+  prefsLock: '锁屏遮罩盖住整个页面，解锁前无法操作。开启后：Ctrl+L 立即锁屏；鼠标 / 键盘空闲达到设定分钟数自动锁屏（有活动就重新计时，可设 0–1440 分钟，0 = 不自动锁屏）；锁屏状态会持久化，刷新页面后仍在锁屏，解锁才清除。解锁密码仅保存在本机浏览器（明文存 localStorage，不上传服务器），留空则锁屏后点击即可解锁。锁屏参数由壳在页面加载时读取，改动需刷新页面后生效；「立即锁屏」会自动先保存再刷新，直接进入锁屏。',
+  shellTags: '内容区顶部的页签栏记录本次会话打开过的页面：首页「报表」固定不可关闭，其余页签可单独关闭、右键批量操作，清单在刷新后保留（存档非法项会自动丢弃、自动去重）。「清空页签（回到首页）」调用页签栏自带的「全部关闭」：立即回到只剩首页并跳回首页，不用刷新。',
+  shellNotify: '顶栏铃铛是通知中心：每 60 秒轮询一次最近 8 条网关运行事件（页面切到后台时暂停轮询、回前台立即补拉；间隔固定、暂不可配置），只统计 error / warn 级别的未读角标，打开面板即全部记为已读；首轮拉到数据时会把当时的水位记为已读，历史告警不追着新用户响。完整历史在「日志」页查看。',
 } as const
 
 /** 面板底注（`.hint.retention-note`）与各面板内的说明行 */
@@ -610,6 +767,12 @@ export const NOTES = {
   brandingLogo: '自定义站点图标：替换侧栏品牌标、登录页图标与浏览器标签 favicon。支持 PNG / JPEG / WebP / SVG，超过 280KB 会自动等比缩到 256px 再上传（服务端硬上限约 300KB）。正方形显示效果最好；移除后回到内置图标。保存后刷新页面生效。',
   brandingScope: '品牌数据存在服务端数据库里：同一个部署的所有访问者（含登录页）看到的是同一套标题与图标。桌面端面板目前只能看、不能改（保存通道是网页端部署专属）；API 端点：GET /api/panel/branding（公开）、PUT /api/branding（需登录）。',
   pagePrefs: '这些是**本浏览器**的界面偏好，保存在 localStorage 里（不随账号走、清浏览器数据会重置）。各页自己也有同样的切换控件 —— 这里改的是「下次打开时的默认值」，立即生效（当前页会话内临时切换不受影响）。',
+  /* ── 偏好与外观 / 通知与页签（本次新增）── */
+  prefsPane: '本页与顶栏齿轮的「偏好设置」抽屉共用同一份本机配置（localStorage 的 aibuddy-prefs，不随账号走、清浏览器数据会重置；抽屉每次打开都会重读，两边互相可见）。除锁屏外的一切改动立即应用并持久化；锁屏的解锁校验与自动锁屏计时由壳在页面加载时读取，改动需刷新页面后生效。',
+  prefWatermark: '在页面最上层平铺「品牌名 · 当天日期」的半透明水印（canvas 生成、不挡任何点击），适用于录屏与演示场景；水印文字取侧栏品牌区当前的品牌名，换品牌后重新开关一次即按新名字重绘。',
+  prefDisplayItems: '这些开关与偏好抽屉「布局 / 通用」页签里的同名项目是同一批配置：改这里立即生效，抽屉打开后看到的也是改过的值。全部保存在本机偏好里，不随账号同步。',
+  shellPane: '页签与通知都是外壳（浏览器内）功能：页签清单（aibuddy-tags）、通知已读水位（aibuddy-notify-read）、内容区全屏（aibuddy-content-max）都保存在本机 localStorage，不随账号走。通知中心的 60 秒轮询间隔是固定值，页面不可见时自动暂停、回前台立即补拉。',
+  shellResetUnread: '清除通知中心的已读水位（aibuddy-notify-read）并立即重算：已亮着的红点随之清零，水位在重算时按当前最新事件重建 —— 之后的 error / warn 告警才会计未读。适合「红点想清零、从现在重新计数」的场景。',
 } as const
 
 /** 状态行（`.settings-state`）的派生文案：与旧实现的赋值逐字一致 */

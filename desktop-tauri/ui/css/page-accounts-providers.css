@@ -111,7 +111,9 @@
   border-radius: 12px;
   font-size: 16px;
   font-weight: 700;
-  color: #fff;
+  /* 主色渐变底上的字母：与 components.css 的 button.primary 同一个
+     「彩色底上的近白」配方（浅色 = 纯白，深色 = 近白），不写死 #fff */
+  color: color-mix(in srgb, var(--surface) 8%, white);
   background: linear-gradient(150deg, var(--primary), color-mix(in srgb, var(--primary) 62%, #0b1020));
 }
 .add-provider-logo.is-new {

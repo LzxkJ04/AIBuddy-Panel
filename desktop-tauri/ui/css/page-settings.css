@@ -391,7 +391,7 @@
   line-height: 1;
   cursor: pointer;
 }
-.tag-input .tag-x:hover { background: var(--danger-soft, rgba(220, 38, 38, .12)); color: var(--danger, #dc2626); }
+.tag-input .tag-x:hover { background: var(--danger-soft); color: var(--danger); }
 
 /* 行内输入框：无框无底色（框的描边由外层 .tag-input 出），吃掉剩余宽度 */
 .tag-input .tag-input-field {

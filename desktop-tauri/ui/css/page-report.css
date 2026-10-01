@@ -30,16 +30,12 @@
    深色叠 --surface-inset（深色下唯一比画布更深的凹槽色），
    这样「最浅一档」在两套主题里都稳稳低于任何一档着色格。 */
 
-:root[data-theme="dark"] {
-  --hm-1: color-mix(in srgb, var(--primary) 34%, var(--surface-inset));
-  --hm-2: color-mix(in srgb, var(--primary) 56%, var(--surface-inset));
-  --hm-3: color-mix(in srgb, var(--primary) 78%, var(--surface-inset));
-  --hm-4: var(--primary);
-}
-
-/* 深色下的用量线：上面那个琥珀色（0.72 亮度）在深底上够亮，但与深色主题的
-   --warn 几乎同色，两条线并排时容易把用量线误读成告警色。这里换成更浅、
-   更偏橙的一档，与同屏的 --warn 拉开距离。 */
+/* 深色块只有这一处（原先拆成两块：前一块只热力图、后一块热力图 + 用量线，
+   同一批 --hm-* 声明抄了两遍，改色时容易漏掉一块）—— 合并后热力图四档与
+   深色下的用量线一起换值。
+   深色下的用量线换成更浅、更偏橙的一档（oklch 0.8 0.15 75）：浅色那档琥珀
+   （0.72 亮度）在深底上够亮，但与深色主题的 --warn 几乎同色，两条线并排时
+   容易把用量线误读成告警色，与同屏的 --warn 拉开距离。 */
 :root[data-theme="dark"] {
   --hm-1: color-mix(in srgb, var(--primary) 34%, var(--surface-inset));
   --hm-2: color-mix(in srgb, var(--primary) 56%, var(--surface-inset));

@@ -156,14 +156,31 @@
   color: oklch(0.5 0.16 290);
 }
 
+/* 深色档要写两份（与 page-report.css 的图表色同一套约定）：
+   :root[data-theme="dark"] 接住「设置里显式选了深色」的情况，
+   下面的 prefers-color-scheme 媒体查询接住「跟随系统且系统是深色」的情况 ——
+   只写媒体查询的话，显式深色（系统本身是浅色）下这些徽章仍是浅色取值，
+   会在深底上突然发灰。 */
+:root[data-theme="dark"] .badge.tag.phase-waiting {
+  background: oklch(0.72 0.11 200 / 15%);
+  border-color: oklch(0.72 0.11 200 / 34%);
+  color: oklch(0.8 0.1 200);
+}
+
+:root[data-theme="dark"] .badge.tag.phase-queued {
+  background: oklch(0.72 0.13 285 / 15%);
+  border-color: oklch(0.72 0.13 285 / 34%);
+  color: oklch(0.82 0.12 288);
+}
+
 @media (prefers-color-scheme: dark) {
-  .badge.tag.phase-waiting {
+  :root[data-theme="system"] .badge.tag.phase-waiting {
     background: oklch(0.72 0.11 200 / 15%);
     border-color: oklch(0.72 0.11 200 / 34%);
     color: oklch(0.8 0.1 200);
   }
 
-  .badge.tag.phase-queued {
+  :root[data-theme="system"] .badge.tag.phase-queued {
     background: oklch(0.72 0.13 285 / 15%);
     border-color: oklch(0.72 0.13 285 / 34%);
     color: oklch(0.82 0.12 288);
@@ -528,9 +545,16 @@
   color: oklch(0.45 0.18 305);
 }
 
+:root[data-theme="dark"] .req-hover-tag.sensitive,
+:root[data-theme="dark"] .badge.tag.sensitive {
+  background: oklch(0.7 0.16 305 / 16%);
+  border-color: oklch(0.7 0.16 305 / 34%);
+  color: oklch(0.82 0.12 305);
+}
+
 @media (prefers-color-scheme: dark) {
-  .req-hover-tag.sensitive,
-  .badge.tag.sensitive {
+  :root[data-theme="system"] .req-hover-tag.sensitive,
+  :root[data-theme="system"] .badge.tag.sensitive {
     background: oklch(0.7 0.16 305 / 16%);
     border-color: oklch(0.7 0.16 305 / 34%);
     color: oklch(0.82 0.12 305);
@@ -684,8 +708,10 @@
 }
 
 /* user 气泡：主色底白字，输入是纯文本（不做 markdown，见 conversation-preview
-   的 userInner 说明），保留原有换行与空白 */
-.cv-msg.user { background: var(--primary); color: #fff; }
+   的 userInner 说明），保留原有换行与空白。前景用 components.css 的
+   button.primary 同一个「主色底上的近白」配方：浅色得到纯白、深色得到近白
+   （--surface 在深色下是深灰，掺进来刚好把纯白压成不刺眼的近白）。 */
+.cv-msg.user { background: var(--primary); color: color-mix(in srgb, var(--surface) 8%, white); }
 .cv-plain { white-space: pre-wrap; }
 
 /* assistant 气泡：抬升表面色 + 细描边 */

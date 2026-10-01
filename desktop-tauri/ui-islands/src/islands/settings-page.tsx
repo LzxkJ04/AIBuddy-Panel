@@ -24,13 +24,25 @@ import {
 } from '@ui'
 import {
   CATEGORIES,
+  CONTENT_MAX_KEY,
   LANGUAGES,
   NOTES,
+  NOTIFY_READ_KEY,
+  PREFS_EVENT,
+  PREFS_KEY,
+  PREFS_LOCK_ACTIVE_KEY,
+  PRIMARY_DEFAULT,
+  PRIMARY_PRESETS,
   PROMPT_MODES,
   QUEUE_FIELDS,
   RETENTION_FIELDS,
   RETRY_FIELDS,
+  SHELL_CONTENT_WIDTHS,
+  SHELL_PAGE_ANIMS,
+  SHELL_TAG_LABELS,
   STATES,
+  TAGS_HOME,
+  TAGS_KEY,
   THEME_EVENT,
   THEME_MODES,
   TIPS,
@@ -39,12 +51,16 @@ import {
   ZOOM_PERCENTS,
   formatBytes,
   formatCount,
+  normalizeShellPrefs,
   openExternal,
+  parseInteger,
   readThemeMode,
   readZoomPercent,
   shared,
+  toast,
   type GatewayBlocks,
   type NumberField,
+  type ShellPrefs,
   type ThemeMode,
 } from './settings-model'
 import {
@@ -2168,6 +2184,791 @@ function BrandPane({ snap }: { snap: SettingsSnapshot }) {
   )
 }
 
+/* ─── 偏好与外观 / 通知与页签（外壳偏好）────────── */
+
+/**
+ * 「偏好与外观」「通知与页签」两分类：把顶栏齿轮「偏好设置」抽屉、页签栏
+ * （tags-view.js）与通知中心（notify-center.js）三块外壳功能纳入后台设置。
+ *
+ * ⚠ 生效机制（比「显示」分类的纯前端偏好更绕一点，读prefs.js 后确认的事实）：
+ * prefs.js 是封闭 IIFE 且**不监听任何事件**（'aibuddy-prefs-changed' 只是它自己
+ * apply() 后在 document 上派发的广播，今天没有任何监听者），window.__aibuddyPrefs
+ * 只暴露「只读偏好 + 锁屏控制」。所以本页改完 localStorage 后，立即生效只能自己做
+ * —— 下面的 applyShellPrefs 逐条镜像 prefs.js apply() 对这批键的 DOM 效果；壳下次
+ * 加载时会从 localStorage 读到同一批值重新应用，两边不会漂。主题是例外：它的唯一
+ * 应用入口在 app.js（applyTheme 管 data-theme、color-scheme 与窗口标题栏），改主题
+ * 必须调它，再顺手把 aibuddy-prefs.theme 同步成同一个值 —— 否则 prefs.js 启动时
+ * 会用旧值把 data-theme 掰回去。
+ *
+ * 页签 / 通知两块则有官方外部出口（wbTagsView / wbNotifyCenter），「清空页签」「打开
+ * 通知中心」「重置未读」都直接调它们，是活的功能、不是摆设。
+ */
+
+/** 读偏好存档（坏档 / 隐私模式回落默认值，与 prefs.js load() 同一取向） */
+function readShellPrefs(): ShellPrefs {
+  try {
+    return normalizeShellPrefs(JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'))
+  } catch {
+    return normalizeShellPrefs(null)
+  }
+}
+
+/**
+ * 合并写入偏好存档：patch 与现有存档浅合并后整体写回 —— 本页不管理的键（如 layout）
+ * 原样保留，不会冲掉用户在抽屉里配过的其它项（与 prefs.js「读 → 改 → 存」同构）。
+ */
+function writeShellPrefs(patch: Partial<ShellPrefs>): ShellPrefs {
+  let stored: Record<string, unknown> = {}
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}')
+    if (raw && typeof raw === 'object') stored = raw as Record<string, unknown>
+  } catch { /* 坏档按空处理，这次写回即修复 */ }
+  const next = { ...stored, ...normalizeShellPrefs({ ...stored, ...patch }) }
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(next)) } catch { /* 存储不可用只影响持久化 */ }
+  return normalizeShellPrefs(next)
+}
+
+/** 派发偏好广播（与 prefs.js apply() 同款：document + detail 为整份偏好） */
+function dispatchPrefsChanged(prefs: ShellPrefs): void {
+  try { document.dispatchEvent(new CustomEvent(PREFS_EVENT, { detail: prefs })) } catch { /* 老引擎没有 CustomEvent 也无妨 */ }
+}
+
+/** 品牌名（水印 / 页脚用）：与 prefs.js 同一数据源 —— 侧栏品牌区的 h1 */
+function prefBrandName(): string {
+  const h1 = document.querySelector('.brand-text h1')
+  return (h1?.textContent?.trim()) || 'AIBuddy Panel'
+}
+
+/** 平铺水印：与 prefs.js applyWatermark 同款（品牌名 · 当天日期，-20° 斜铺，中性灰半透明） */
+function applyPrefWatermark(on: boolean): void {
+  const old = document.getElementById('pref-watermark')
+  if (!on) {
+    if (old && old.parentNode) old.parentNode.removeChild(old)
+    return
+  }
+  const now = new Date()
+  const text = prefBrandName() + ' · ' + now.getFullYear() + '-'
+    + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0')
+  const w = 280
+  const h = 170
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  ctx.translate(w / 2, h / 2)
+  ctx.rotate((-20 * Math.PI) / 180)
+  ctx.font = '13px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillStyle = 'rgba(127,127,127,0.18)' // 中性灰：浅色 / 深色主题下都低调可见
+  ctx.fillText(text, 0, 0)
+  const node = old ?? document.createElement('div')
+  node.id = 'pref-watermark'
+  node.setAttribute('aria-hidden', 'true')
+  node.style.backgroundImage = `url(${canvas.toDataURL('image/png')})`
+  if (!old) document.body.appendChild(node)
+}
+
+/** 页脚版权：与 prefs.js ensureFooter 同款（.content-inner 底部固定一行） */
+function applyPrefFooter(on: boolean): void {
+  const old = document.getElementById('pref-footer')
+  if (!on) {
+    if (old && old.parentNode) old.parentNode.removeChild(old)
+    return
+  }
+  const host = document.querySelector('.content-inner')
+  if (!host) return
+  const node = old ?? document.createElement('div')
+  node.id = 'pref-footer'
+  node.className = 'pref-footer'
+  node.textContent = `© ${new Date().getFullYear()} ${prefBrandName()} · 基于 agent2api`
+  if (!old) host.appendChild(node)
+}
+
+/** 动态标题：与 prefs.js 同一份数据源（壳在 boot 时记下品牌名与当前页名） */
+function applyPrefTitle(dynamic: boolean): void {
+  const base = (window as unknown as { __aibuddyTitleBase?: { brand?: string; currentPage?: string } }).__aibuddyTitleBase
+  if (!base?.brand) return // 壳还没记下品牌名：不动标题（免得写坏）
+  document.title = dynamic && base.currentPage ? `${base.currentPage} · ${base.brand}` : base.brand
+}
+
+/**
+ * 主题的应用入口在 app.js（applyTheme）：data-theme、color-scheme 与窗口标题栏都由它
+ * 统一处理，并广播 'wb:theme' 让侧栏三键 / 本页「显示」分类的档位跟上。
+ */
+function applyShellTheme(mode: string): void {
+  const app = shared().wbApp
+  if (app?.applyTheme) {
+    app.applyTheme(mode)
+    return
+  }
+  // 桥缺失的兜底（正常不会走到）：至少把 data-theme 与 color-scheme 切过去，
+  // 并按 applyTheme 的契约广播 'wb:theme'，让本页与「显示」分类的档位跟上
+  const root = document.documentElement
+  root.dataset.theme = mode
+  const dark = mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  root.style.colorScheme = dark ? 'dark' : 'light'
+  window.dispatchEvent(new CustomEvent(THEME_EVENT, { detail: mode }))
+}
+
+/**
+ * 逐条镜像 prefs.js apply() 的 DOM 效果（data-theme 除外 —— 那归 applyTheme 管）。
+ * 全部幂等：每次改偏好后整份重放，多调几次与调一次结果相同。
+ */
+function applyShellPrefs(prefs: ShellPrefs): void {
+  const root = document.documentElement
+  root.setAttribute('data-pref-sidebar', prefs.darkSidebar ? 'dark' : 'light')
+  root.setAttribute('data-pref-topbar', prefs.darkTopbar ? 'dark' : 'light')
+  root.setAttribute('data-pref-width', prefs.contentWidth)
+  root.setAttribute('data-pref-filter', prefs.filter)
+  root.setAttribute('data-pref-anim', prefs.pageAnim)
+  root.setAttribute('data-pref-crumb', prefs.isBreadcrumb ? 'on' : 'off')
+  root.setAttribute('data-pref-logo', prefs.isShowLogo ? 'on' : 'off')
+  root.setAttribute('data-pref-grouplabel', prefs.isGroupLabel ? 'on' : 'off')
+  root.setAttribute('data-pref-topbar-grad', prefs.topbarGradient ? 'on' : 'off')
+  root.setAttribute('data-pref-navhl', prefs.menuHighlight ? 'on' : 'off')
+  // 主题色派生规则与 prefs.js 逐字同源：衍生色用 color-mix 跟随，明暗两套主题都成立
+  if (prefs.primary) {
+    const c = prefs.primary
+    root.style.setProperty('--primary', c)
+    root.style.setProperty('--ui-primary', c)
+    root.style.setProperty('--primary-hover', `color-mix(in srgb, ${c} 86%, var(--text))`)
+    root.style.setProperty('--ui-primary-hover', `color-mix(in srgb, ${c} 86%, var(--text))`)
+    root.style.setProperty('--primary-soft', `color-mix(in srgb, ${c} 14%, transparent)`)
+    root.style.setProperty('--primary-bd', `color-mix(in srgb, ${c} 38%, transparent)`)
+    root.style.setProperty('--primary-fg', `color-mix(in srgb, ${c} 70%, var(--text))`)
+  } else {
+    for (const name of ['--primary', '--ui-primary', '--primary-hover', '--ui-primary-hover', '--primary-soft', '--primary-bd', '--primary-fg']) {
+      root.style.removeProperty(name)
+    }
+  }
+  applyPrefWatermark(prefs.watermark)
+  applyPrefFooter(prefs.isFooter)
+  applyPrefTitle(prefs.dynamicTitle)
+}
+
+/**
+ * 一行「开关 + 详细说明」。与 SwitchRow 的差别：说明独立成行下的 hint 段 ——
+ * 这里的每一项都要放下 2-3 句的中文说明（是什么 / 怎么生效 / 注意什么），
+ * 塞进开关旁的行内文字放不下。
+ */
+function PrefSwitchRow({ id, label, checked, hint, onChange }: {
+  id: string
+  label: string
+  checked: boolean
+  hint: string
+  onChange: (next: boolean) => void
+}) {
+  return (
+    <div className='retention-row'>
+      <label htmlFor={id}>{label}</label>
+      <span className='retention-input'>
+        <Switch id={id} checked={checked} onCheckedChange={onChange} />
+      </span>
+      <div className='hint'>{hint}</div>
+    </div>
+  )
+}
+
+/** 自动锁屏分钟数的字段表（0–1440，0 = 不自动锁屏，与 prefs.js 的抽屉同口径） */
+const LOCK_MINUTES_FIELD: NumberField = {
+  key: 'minutes',
+  id: 'prefs-lock-minutes',
+  label: '自动锁屏（空闲分钟数）',
+  unit: '分钟',
+  min: 0,
+  max: 1440,
+  hint: '鼠标 / 键盘空闲达到该分钟数自动锁屏（有活动就重新计时）；0 = 不自动锁屏。可填 0–1440。',
+}
+
+/**
+ * 「偏好与外观」：与顶栏齿轮的偏好抽屉共用同一份 aibuddy-prefs。除锁屏外的一切
+ * 改动走 commit()（写档 → applyShellPrefs 立即应用 → 广播 → 界面采纳）；
+ * 锁屏参数只写档（解锁校验与自动锁屏计时由壳在页面加载时读取，刷新后生效）。
+ */
+function PrefsPane() {
+  const [prefs, setPrefs] = React.useState<ShellPrefs>(readShellPrefs)
+  const prefsRef = React.useRef(prefs)
+  prefsRef.current = prefs
+  const [pwDraft, setPwDraft] = React.useState<string | null>(null)
+
+  // 跟随其它入口的改动：抽屉每次 apply 都派发 PREFS_EVENT（document），重读即可；
+  // 主题走 app.js 的 'wb:theme' —— 除了采纳新值，还要把 aibuddy-prefs.theme 同步成
+  // 同一个值（prefs.js 启动时会用这个值重设 data-theme，不同步就会互相顶掉）
+  React.useEffect(() => {
+    const onPrefs = () => setPrefs(readShellPrefs())
+    const onTheme = (event: Event) => {
+      const mode = String((event as CustomEvent).detail || 'system')
+      if (prefsRef.current.theme === mode) return
+      writeShellPrefs({ theme: mode as ShellPrefs['theme'] })
+      setPrefs(readShellPrefs())
+    }
+    document.addEventListener(PREFS_EVENT, onPrefs)
+    window.addEventListener(THEME_EVENT, onTheme)
+    return () => {
+      document.removeEventListener(PREFS_EVENT, onPrefs)
+      window.removeEventListener(THEME_EVENT, onTheme)
+    }
+  }, [])
+
+  /** 改偏好的唯一通道：写档 → 立即应用 → 广播 → 界面采纳 */
+  function commit(patch: Partial<ShellPrefs>, okText?: string): void {
+    const next = writeShellPrefs(patch)
+    applyShellPrefs(next)
+    dispatchPrefsChanged(next)
+    setPrefs(next)
+    if (okText) toast(okText)
+  }
+
+  function changeTheme(mode: string): void {
+    // 先调 app.js 的唯一入口（窗口标题栏与 'wb:theme' 都由它处理），再同步偏好存档；
+    // applyTheme 派发的 'wb:theme' 会命中上面的同步监听，两次写档是同一个值，无副作用
+    applyShellTheme(mode)
+    commit({ theme: mode as ShellPrefs['theme'] })
+  }
+
+  /** 灰色 / 色弱两个滤镜互斥（与抽屉同款）：开一个自动关另一个 */
+  const setFilter = (mode: 'gray' | 'weak') => (next: boolean): void =>
+    commit({ filter: next ? mode : '' })
+
+  async function commitLockMinutes(raw: string): Promise<void> {
+    const parsed = parseInteger(raw, 0, 1440, '空闲分钟数')
+    if (!parsed.ok) { toast(parsed.message, 'err'); return }
+    const current = prefsRef.current.lockScreen
+    if (parsed.value === current.minutes) return
+    commit(
+      { lockScreen: { ...current, minutes: parsed.value } },
+      `✅ 已保存：空闲 ${parsed.value === 0 ? '不自动锁屏' : `${parsed.value} 分钟`}（刷新页面后生效）`,
+    )
+  }
+
+  function commitLockPassword(): void {
+    const raw = pwDraft
+    if (raw === null) return
+    setPwDraft(null)
+    const current = prefsRef.current.lockScreen
+    if (raw === current.password) return
+    commit(
+      { lockScreen: { ...current, password: raw } },
+      raw ? '✅ 已保存锁屏密码（刷新页面后用于解锁校验）' : '✅ 已清除锁屏密码（锁屏后点击即可解锁）',
+    )
+  }
+
+  function openDrawer(): void {
+    // 抽屉没有独立的外部出口，顶栏齿轮按钮（#pref-btn-prefs）就是入口本身：
+    // click 它与用户点齿轮完全等价（prefs.js 还挂了 MutationObserver 自愈，按钮常在）
+    const button = document.getElementById('pref-btn-prefs')
+    if (button) { button.click(); return }
+    toast('未找到偏好抽屉按钮（顶栏尚未就绪），请稍后重试', 'err')
+  }
+
+  function lockNow(): void {
+    // 锁屏遮罩由壳在页面加载时恢复（boot → apply → syncLockScreen 读
+    // aibuddy-lockscreen-active），遮罩上的密码输入框用的是**刷新后**读到的偏好 ——
+    // 因此不走壳内 lockNow()（那会用壳内存里的旧偏好建遮罩，刚改的密码它不认识）：
+    // 先落盘锁屏标记再刷新，刷新后直接进入锁屏，刚保存的密码与分钟数立即生效
+    try { localStorage.setItem(PREFS_LOCK_ACTIVE_KEY, '1') } catch { /* 写不进就无法持久锁屏 */ }
+    window.location.reload()
+  }
+
+  return (
+    <>
+      <section className='panel'>
+        <PanelHead title='偏好设置抽屉' tip={TIPS.prefsDrawer} />
+        <div className='panel-body'>
+          <div className='hint'>
+            偏好抽屉是壳自带的完整偏好入口（外观 / 布局 / 通用 / 锁屏四个页签，外加
+            「复制偏好 / 导入偏好 / 恢复默认」）；本分类下面各面板收录其中最常用的项目
+            —— 两边改的是同一份配置，改哪处另一处都看得到。
+          </div>
+          <div className='mt-2.5'>
+            <Button id='prefs-open-drawer' variant='outline' onClick={openDrawer}>
+              打开偏好设置抽屉
+            </Button>
+          </div>
+        </div>
+      </section>
+
+      <section className='panel'>
+        <PanelHead title='主题模式' tip={TIPS.prefsTheme} />
+        <div className='panel-body'>
+          <div className='retention-list'>
+            <div className='retention-row'>
+              <label htmlFor='prefs-theme'>界面主题</label>
+              <span className='prompt-input'>
+                {/* 与「显示 → 显示模式」同款三档；展示文案显式给 SelectValue */}
+                <Select
+                  value={prefs.theme}
+                  onValueChange={next => { if (next != null && String(next)) changeTheme(String(next)) }}
+                >
+                  <SelectTrigger id='prefs-theme' className='w-[180px]' aria-label='界面主题'>
+                    <SelectValue>{THEME_MODES.find(item => item.value === prefs.theme)?.label || prefs.theme}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {THEME_MODES.map(item => (
+                      <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </span>
+              <div className='hint'>
+                与侧边栏底部的主题三键、偏好抽屉、「显示 → 显示模式」是同一设置的不同入口：
+                改哪处，其它处立即跟上（本页同时写入应用主题与偏好存档两处）。
+              </div>
+            </div>
+          </div>
+          <div className='settings-state'>{themeStateText(prefs.theme)}</div>
+        </div>
+      </section>
+
+      <section className='panel'>
+        <PanelHead title='主题色' tip={TIPS.prefsPrimary} />
+        <div className='panel-body'>
+          <div className='flex flex-wrap gap-2'>
+            {PRIMARY_PRESETS.map(([hex, name]) => {
+              const active = prefs.primary.toLowerCase() === hex
+              return (
+                <button
+                  key={hex}
+                  type='button'
+                  title={`${name}（${hex}）`}
+                  onClick={() => commit({ primary: hex }, `✅ 主题色：${name}`)}
+                  className={'flex items-center gap-1.5 rounded-md border px-2 py-1 text-[12px] '
+                    + (active ? 'text-foreground' : 'border-hairline text-subtle')}
+                  style={active ? { borderColor: hex } : undefined}
+                >
+                  <span className='size-3.5 rounded-full border border-hairline' style={{ background: hex }} />
+                  {name}
+                </button>
+              )
+            })}
+          </div>
+          <div className='mt-2.5 flex flex-wrap items-center gap-2.5'>
+            <Label className='text-[12.5px] font-medium' htmlFor='prefs-primary-custom'>自定义</Label>
+            {/* 原生取色器（组件库没有 color input）：选色即应用，与抽屉的自定义色同源 */}
+            <input
+              id='prefs-primary-custom'
+              type='color'
+              className='size-8 cursor-pointer rounded-md border border-hairline bg-transparent p-0.5'
+              value={prefs.primary || PRIMARY_DEFAULT}
+              onChange={event => commit({ primary: event.target.value })}
+            />
+            <span className='tabular-nums text-[12px] text-subtle'>{prefs.primary || '跟随默认（紫罗兰）'}</span>
+            <Button
+              id='prefs-primary-reset'
+              variant='outline'
+              onClick={() => commit({ primary: '' }, '✅ 已恢复默认主题色（紫罗兰）')}
+            >
+              恢复默认紫
+            </Button>
+          </div>
+          <div className='hint'>{TIPS.prefsPrimary}</div>
+        </div>
+      </section>
+
+      <section className='panel'>
+        <PanelHead title='深色与滤镜' />
+        <div className='panel-body'>
+          <div className='retention-list'>
+            <PrefSwitchRow
+              id='prefs-dark-sidebar'
+              label='深色侧边栏'
+              checked={prefs.darkSidebar}
+              hint='仅把左侧边栏换成深色配色，内容区跟随当前主题（偏好抽屉「外观」页的同名开关是同一项）。立即生效并记住。'
+              onChange={next => commit({ darkSidebar: next })}
+            />
+            <PrefSwitchRow
+              id='prefs-dark-topbar'
+              label='深色顶栏'
+              checked={prefs.darkTopbar}
+              hint='仅把顶部栏换成深色配色，内容区跟随当前主题。立即生效并记住。'
+              onChange={next => commit({ darkTopbar: next })}
+            />
+            <PrefSwitchRow
+              id='prefs-watermark'
+              label='界面水印'
+              checked={prefs.watermark}
+              hint={NOTES.prefWatermark}
+              onChange={next => commit({ watermark: next })}
+            />
+            <PrefSwitchRow
+              id='prefs-filter-gray'
+              label='灰色模式'
+              checked={prefs.filter === 'gray'}
+              hint='页面整体去色，只保留明暗层级（CSS 滤镜，适合打印 / 专注场景）。与色弱模式互斥：开一个会自动关掉另一个。'
+              onChange={setFilter('gray')}
+            />
+            <PrefSwitchRow
+              id='prefs-filter-weak'
+              label='色弱模式'
+              checked={prefs.filter === 'weak'}
+              hint='反转明度并回旋色相，提升相近颜色之间的辨识度（CSS 滤镜）。与灰色模式互斥。'
+              onChange={setFilter('weak')}
+            />
+          </div>
+        </div>
+      </section>
+
+      <section className='panel'>
+        <PanelHead title='内容宽度与切换动画' />
+        <div className='panel-body'>
+          <div className='retention-list'>
+            <div className='retention-row'>
+              <label htmlFor='prefs-content-width'>内容宽度</label>
+              <span className='prompt-input'>
+                <Select
+                  value={prefs.contentWidth}
+                  onValueChange={next => {
+                    if (next != null && String(next)) commit({ contentWidth: String(next) as ShellPrefs['contentWidth'] })
+                  }}
+                >
+                  <SelectTrigger id='prefs-content-width' className='w-[220px]' aria-label='内容宽度'>
+                    <SelectValue>
+                      {SHELL_CONTENT_WIDTHS.find(item => item.value === prefs.contentWidth)?.label || prefs.contentWidth}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SHELL_CONTENT_WIDTHS.map(item => (
+                      <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </span>
+              <div className='hint'>
+                流式跟随窗口宽度铺满；定宽把内容收进 1200px 版心，宽屏上更易读。立即生效并记住。
+              </div>
+            </div>
+            <div className='retention-row'>
+              <label htmlFor='prefs-page-anim'>页面切换动画</label>
+              <span className='prompt-input'>
+                <Select
+                  value={prefs.pageAnim}
+                  onValueChange={next => {
+                    if (next != null && String(next)) commit({ pageAnim: String(next) as ShellPrefs['pageAnim'] })
+                  }}
+                >
+                  <SelectTrigger id='prefs-page-anim' className='w-[220px]' aria-label='页面切换动画'>
+                    <SelectValue>
+                      {SHELL_PAGE_ANIMS.find(item => item.value === prefs.pageAnim)?.label || prefs.pageAnim}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SHELL_PAGE_ANIMS.map(item => (
+                      <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </span>
+              <div className='hint'>
+                切换页面时的过场效果：无 / 淡入 / 滑入；系统开启「减少动态效果」时自动禁用。
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className='panel'>
+        <PanelHead title='界面显示项' />
+        <div className='panel-body'>
+          <div className='retention-list'>
+            <PrefSwitchRow
+              id='prefs-topbar-grad'
+              label='顶栏渐变'
+              checked={prefs.topbarGradient}
+              hint='顶栏背景改为「主色 → 紫蓝」横向渐变，浅色 / 深色主题下都协调。'
+              onChange={next => commit({ topbarGradient: next })}
+            />
+            <PrefSwitchRow
+              id='prefs-breadcrumb'
+              label='面包屑'
+              checked={prefs.isBreadcrumb}
+              hint='顶栏显示当前页面位置（如「首页 / 报表」）；手机窄屏下始终隐藏。'
+              onChange={next => commit({ isBreadcrumb: next })}
+            />
+            <PrefSwitchRow
+              id='prefs-show-logo'
+              label='侧栏 Logo'
+              checked={prefs.isShowLogo}
+              hint='关闭后隐藏侧栏顶部的圆形 Logo，品牌文字保留。'
+              onChange={next => commit({ isShowLogo: next })}
+            />
+            <PrefSwitchRow
+              id='prefs-group-label'
+              label='折叠时隐藏分组标题'
+              checked={prefs.isGroupLabel}
+              hint='开启 = 侧栏折叠时隐藏「运行状态」等分组标题；关闭 = 折叠 / 手机抽屉模式也显示。'
+              onChange={next => commit({ isGroupLabel: next })}
+            />
+            <PrefSwitchRow
+              id='prefs-menu-highlight'
+              label='选中菜单高亮条'
+              checked={prefs.menuHighlight}
+              hint='当前选中的菜单项左侧额外显示一条主色竖条。'
+              onChange={next => commit({ menuHighlight: next })}
+            />
+            <PrefSwitchRow
+              id='prefs-dynamic-title'
+              label='动态标题'
+              checked={prefs.dynamicTitle}
+              hint='把当前页面名写进浏览器标签页标题（如「报表 · AIBuddy Panel」）。'
+              onChange={next => commit({ dynamicTitle: next })}
+            />
+            <PrefSwitchRow
+              id='prefs-progressbar'
+              label='页面切换进度条'
+              checked={prefs.progressbar}
+              hint='切换页面时顶部显示细进度条（壳在每次切页时现读偏好，下一次切页起按新值生效）。'
+              onChange={next => commit({ progressbar: next })}
+            />
+            <PrefSwitchRow
+              id='prefs-footer'
+              label='页脚版权'
+              checked={prefs.isFooter}
+              hint='在内容区底部显示版权行「© 2026 品牌名 · 基于 agent2api」。'
+              onChange={next => commit({ isFooter: next })}
+            />
+          </div>
+          <div className='hint'>{NOTES.prefDisplayItems}</div>
+        </div>
+      </section>
+
+      <section className='panel'>
+        <PanelHead title='锁屏管理' tip={TIPS.prefsLock} />
+        <div className='panel-body'>
+          <div className='retention-list'>
+            <PrefSwitchRow
+              id='prefs-lock-enabled'
+              label='启用锁屏'
+              checked={prefs.lockScreen.enabled}
+              hint='开启后 Ctrl+L 立即锁屏、空闲达到下方分钟数自动锁屏；刷新页面后由壳按保存值接管计时与解锁校验。'
+              onChange={next => commit({ lockScreen: { ...prefs.lockScreen, enabled: next } })}
+            />
+            <div className='retention-row'>
+              <label htmlFor='prefs-lock-password'>锁屏密码</label>
+              <span className='prompt-input'>
+                {/* 草稿机制与提示词文件同款：聚焦抄入生效值，失焦 / 回车提交 */}
+                <Input
+                  id='prefs-lock-password'
+                  type='password'
+                  autoComplete='new-password'
+                  placeholder='未设置（留空则点击解锁）'
+                  value={pwDraft !== null ? pwDraft : prefs.lockScreen.password}
+                  onChange={event => setPwDraft(event.target.value)}
+                  onFocus={() => setPwDraft(prefs.lockScreen.password)}
+                  onBlur={() => commitLockPassword()}
+                  onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
+                />
+              </span>
+              <div className='hint'>
+                仅明文保存在本机 localStorage，用于本机解锁校验，不上传服务器；留空则锁屏后
+                点击即可解锁。失焦或回车保存。
+              </div>
+            </div>
+            <NumberRow
+              field={LOCK_MINUTES_FIELD}
+              value={prefs.lockScreen.minutes}
+              disabled={false}
+              onCommit={commitLockMinutes}
+            />
+          </div>
+          <div className='mt-2.5'>
+            <Button id='prefs-lock-now' variant='default' onClick={lockNow}>
+              立即锁屏
+            </Button>
+            <div className='hint'>
+              先落盘锁屏标记（aibuddy-lockscreen-active）再刷新页面：刷新后直接进入锁屏界面，
+              刚保存的密码与分钟数立即生效；解锁后标记自动清除。
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div className='hint retention-note'>{NOTES.prefsPane}</div>
+    </>
+  )
+}
+
+/* ─── 通知与页签（页签栏 / 内容区全屏 / 通知中心的外部出口）────────── */
+
+/** 读页签存档（与 tags-view.js loadTags 同一取向：只认字符串、去重、保序） */
+function readTags(): string[] {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(TAGS_KEY) || '[]')
+    if (!Array.isArray(raw)) return [TAGS_HOME]
+    const out: string[] = []
+    for (const item of raw) {
+      if (typeof item === 'string' && item && out.indexOf(item) === -1) out.push(item)
+    }
+    return out.length ? out : [TAGS_HOME]
+  } catch {
+    return [TAGS_HOME]
+  }
+}
+
+function readContentMax(): boolean {
+  try { return localStorage.getItem(CONTENT_MAX_KEY) === '1' } catch { return false }
+}
+
+/** 未读告警数（通知中心的实时缓存；中心对象不在时给 null，界面显示「—」） */
+function readUnread(): number | null {
+  const unread = shared().wbNotifyCenter?.unread?.()
+  return typeof unread === 'number' ? unread : null
+}
+
+/**
+ * 「通知与页签」：页签栏与通知中心都有壳官方的外部出口（wbTagsView / wbNotifyCenter），
+ * 动作直接调它们 —— 是活的功能，不是只改存档的假开关；页签状态展示读 localStorage
+ * （与页签栏自己的持久化同键，刷新 / 动作后重读）。
+ */
+function ShellPane() {
+  const [tags, setTags] = React.useState<string[]>(readTags)
+  const [unread, setUnread] = React.useState<number | null>(readUnread)
+  const [contentMax, setContentMax] = React.useState<boolean>(readContentMax)
+
+  // Esc 退出内容区全屏由 tags-view.js 处理（写档 + 摘 class），这里只负责把本页
+  // 开关的状态跟上来（那边监听在前、写档同步完成后这边才读得到新值）
+  React.useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setContentMax(readContentMax()) }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
+
+  function refresh(): void {
+    setTags(readTags())
+    setUnread(readUnread())
+    setContentMax(readContentMax())
+  }
+
+  function clearTags(): void {
+    const view = shared().wbTagsView
+    if (view?.closeAll) {
+      // 与页签栏「全部关闭」同一份实现：清单回到只剩首页、立即重绘并跳回首页
+      view.closeAll()
+      toast('✅ 已清空页签，回到首页')
+    } else {
+      // 页签栏不在（理论上不会）：退化为只重写存档，刷新后生效
+      try { localStorage.setItem(TAGS_KEY, JSON.stringify([TAGS_HOME])) } catch { /* 存储不可用只影响持久化 */ }
+      toast('已重置页签存档，刷新页面后生效')
+    }
+    setTags(readTags())
+  }
+
+  function openNotify(): void {
+    const center = shared().wbNotifyCenter
+    if (center?.open) {
+      center.open()
+      return
+    }
+    // 中心对象不在时退化为点铃铛按钮（铃铛由 notify-center.js 自愈，常在）
+    const bell = document.getElementById('nc-btn-bell')
+    if (bell) { bell.click(); return }
+    toast('未找到通知中心（顶栏尚未就绪），请稍后重试', 'err')
+  }
+
+  function resetUnread(): void {
+    try { localStorage.removeItem(NOTIFY_READ_KEY) } catch { /* 存储不可用时无从清除 */ }
+    const center = shared().wbNotifyCenter
+    if (center?.refresh) {
+      // 清完立即重算：refresh 拉到数据后 firstRunSeed 按当前最新事件重建水位、
+      // 角标清零（拉取异步，稍后重读一次未读数把界面跟上来）
+      center.refresh()
+      toast('✅ 已重置未读：当前告警按已读处理，红点已清零')
+      window.setTimeout(() => setUnread(readUnread()), 2000)
+    } else {
+      toast('已清除已读水位，下一次轮询（60 秒内）后按新事件重新计数')
+    }
+    setUnread(readUnread())
+  }
+
+  function toggleContentMax(on: boolean): void {
+    // 与 tags-view.js toggleContentMax 同款：body class 立即生效，存档记住
+    document.body.classList.toggle('pref-content-max', on)
+    try { localStorage.setItem(CONTENT_MAX_KEY, on ? '1' : '0') } catch { /* 存储不可用只影响持久化 */ }
+    setContentMax(on)
+  }
+
+  const tagText = tags.map(id => SHELL_TAG_LABELS[id] || id).join('、')
+
+  return (
+    <>
+      <section className='panel'>
+        <PanelHead
+          title='页签栏'
+          tip={TIPS.shellTags}
+          actions={<RefreshButton id='btn-shell-tags-refresh' onClick={refresh} />}
+        />
+        <div className='panel-body'>
+          <div className='retention-list'>
+            <div className='retention-row'>
+              <label>已打开页签</label>
+              <span className='storage-line'>
+                <span className='storage-path' title={tagText}>
+                  {`${formatCount(tags.length)} 个${tags.length ? `：${tagText}` : ''}`}
+                </span>
+              </span>
+              <div className='hint'>
+                页签栏的实时清单以内容区顶部的页签栏为准；本行在进入本页或点「刷新」时读取
+                （页签变化不会推送到这里）。
+              </div>
+            </div>
+          </div>
+          <div className='mt-2.5'>
+            <Button id='btn-shell-tags-clear' variant='outline' onClick={clearTags}>
+              清空页签（回到首页）
+            </Button>
+          </div>
+        </div>
+      </section>
+
+      <section className='panel'>
+        <PanelHead title='内容区全屏' />
+        <div className='panel-body'>
+          <PrefSwitchRow
+            id='prefs-content-max'
+            label='隐藏侧栏 / 顶栏 / 页签栏'
+            checked={contentMax}
+            hint='只留当前页内容 —— 与页签右键菜单的「当前页全屏」是同一个功能，按 Esc 退出；状态记住，刷新后保持。'
+            onChange={toggleContentMax}
+          />
+        </div>
+      </section>
+
+      <section className='panel'>
+        <PanelHead
+          title='通知中心'
+          tip={TIPS.shellNotify}
+          actions={<RefreshButton id='btn-shell-notify-refresh' onClick={() => setUnread(readUnread())} />}
+        />
+        <div className='panel-body'>
+          <div className='retention-list'>
+            <div className='retention-row'>
+              <label>未读告警</label>
+              <span className='storage-line'>
+                <span className='storage-path'>
+                  {unread === null ? '—' : `${formatCount(unread)} 条（仅统计 error / warn）`}
+                </span>
+              </span>
+              <div className='hint'>顶栏铃铛上的红点角标读数；打开通知中心面板即全部记为已读。</div>
+            </div>
+          </div>
+          <div className='mt-2.5 flex flex-wrap gap-2.5'>
+            <Button id='btn-shell-notify-open' variant='default' onClick={openNotify}>
+              打开通知中心
+            </Button>
+            <Button id='btn-shell-notify-reset' variant='outline' onClick={resetUnread}>
+              重置未读
+            </Button>
+          </div>
+          <div className='hint'>{NOTES.shellResetUnread}</div>
+        </div>
+      </section>
+
+      <div className='hint retention-note'>{NOTES.shellPane}</div>
+    </>
+  )
+}
+
 /* ─── 页面 ─────────────────────────────────── */
 
 function SettingsPage() {
@@ -2227,6 +3028,12 @@ function SettingsPage() {
         </div>
         <div className={paneClass('data')} data-cat='data'>
           <DataPane snap={snap} />
+        </div>
+        <div className={paneClass('prefs')} data-cat='prefs'>
+          <PrefsPane />
+        </div>
+        <div className={paneClass('shell')} data-cat='shell'>
+          <ShellPane />
         </div>
         <div className={paneClass('deploy')} data-cat='deploy'>
           <DeployPane snap={snap} />
