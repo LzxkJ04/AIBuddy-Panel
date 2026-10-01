@@ -16,10 +16,14 @@
 //! 它必须**跨请求稳定**（风控会把同一个设备标识的多次请求关联起来），
 //! 因此生成一次就随凭证落盘，而不是每次请求现编一个。
 //!
-//! ── 与「账号记录」的关系 ────────────────────────────────────
-//! 落盘时三个字段都进账号记录的 `auth` 子对象（`accessToken` / `jwt` /
-//! `deviceMid`）—— 与各家一致的形态，于是适配器那条
-//! `account.get("auth").get("accessToken")` 的通用取法在本家同样成立。
+//! ── 与「账号记录」的关系（两种形态，别混）─────────────────────
+//! **落盘的记录**（`accounts` 库里那条，`add_zcode_account` 写入）把三个字段
+//! 放在**顶层**（`accessToken` / `jwt` / `deviceMid`，见
+//! `account_store::zcode_accounts`）—— 余额查询与领取读的是这一份
+//! （`record.get("jwt")`，不是 `record.get("auth").get("jwt")`）。
+//! **会话**（`session_from_record` 的产物，适配器 `build_chat_request` 拿到的）
+//! 才把访问令牌装进 `auth.accessToken` 子对象，`jwt` / `deviceMid` 仍在会话
+//! 顶层 —— 两条取法各对各的形状，写成一种就会读空。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。

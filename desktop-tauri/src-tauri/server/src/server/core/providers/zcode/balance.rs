@@ -120,13 +120,15 @@ pub(super) async fn query_usage(
         claim::urlencode(&app_version()),
         claim::urlencode(platform())
     );
-    // 头集合：三个，一个不多（见模块头：其余客户端身份头对这台网关无效）。
+    // 头集合：两个，一个不多（见模块头：其余客户端身份头对这台网关无效）。
+    // `Accept` **不在这里写**：`send_raw` 统一带上（与 `claim::preview` 同一口径），
+    // 再传一份会让出网请求带两份同名头（reqwest 的 header 是 append 语义）。
     // 设备标识没有值时**不发空头**：空头与缺失同效（都是 3001），
     // 但日志里能少一条误导性的记录。
-    let mut headers: Vec<(String, String)> = vec![
-        ("Authorization".to_string(), format!("Bearer {jwt}")),
-        ("Accept".to_string(), "application/json".to_string()),
-    ];
+    let mut headers: Vec<(String, String)> = vec![(
+        "Authorization".to_string(),
+        format!("Bearer {jwt}"),
+    )];
     if let Some(mid) = device_mid.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
         headers.push(("X-Device-Mid".to_string(), mid.to_string()));
     }

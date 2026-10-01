@@ -347,28 +347,32 @@ impl ProviderAdapter for CatPawAdapter {
     // `POST /api/accounts/refresh` 上那条明确 400 的提示（`api::accounts`）承担
     // 「用户手动点刷新」时的说明职责，两者口径一致。
 
-    /// CatPaw 有余额概念：`GET credit.catpaw.meituan.com/api/credit/balance`
-    /// （`catpaw/balance.rs`）。
+    /// CatPaw 有余额概念：`GET catx.nocode.cn/api/gateway/credit/balance`
+    /// （`catpaw/balance.rs`；端点与鉴权口径的修正经过见该模块头 —— 旧注释里的
+    /// `credit.catpaw.meituan.com` 网页积分域是归因错误，实测只认网关 API 的
+    /// `X-Auth-Token`）。
     ///
-    /// ── 但这个 true 与「点了就能查到」不是一回事 ────────────────
-    /// 该接口要的是**网页会话凭证 token2**（原项目单独配置的一项），落在这个
-    /// 账号记录的 `balanceToken` 字段（或旧数据导入留下的 `balanceCookie.token2`）
-    /// 上 —— 转发用的 `X-Passport-Token` 在那边不认。没配置时 `query_usage`
-    /// 返回可识别的「未配置」（400 + `usage_not_configured`），前端显示成中性
-    /// 提示而不是红色失败。
+    /// ── 凭证不需要任何额外配置 ─────────────────────────────────
+    /// 余额接口用的就是**转发那条链的同一个 `accessToken`**（经
+    /// `credentials::snapshot_for`：账号记录 / 桌面端实时登录态 / 环境变量旁路
+    /// 三处来源一次覆盖）；旧字段 `balanceToken` / `balanceCookie.token2` 降级为
+    /// 回退来源，不再是前置要求。三处都拿不到 token 时 `query_usage` 返回可识别
+    /// 的「未配置」（400 + `usage_not_configured`），前端显示成中性提示而不是
+    /// 红色失败。
     ///
-    /// 为什么仍然返回 true（而不是「没配就没有能力」）：`supports_usage` 回答的是
-    /// **这一家有没有这个概念**（恒定事实），「这个账号配没配」是运行时状态，
-    /// 由 `query_usage` 的结果表达。返回 false 会让前端根本不渲染「积分」按钮，
-    /// 用户连「去配置它」的入口都看不到。
+    /// 为什么「通常无需配置」仍然返回 true（而不是「没配就没有能力」）：
+    /// `supports_usage` 回答的是**这一家有没有这个概念**（恒定事实），
+    /// 「这个账号此刻有没有可用凭证」是运行时状态，由 `query_usage` 的结果表达。
+    /// 返回 false 会让前端根本不渲染「积分」按钮，用户连入口都看不到。
     fn supports_usage(&self) -> bool {
         true
     }
 
     /// 查余额（`catpaw/balance.rs`）。
     ///
-    /// 凭证按「账号记录里的 `balanceToken` → 导入留下的 `balanceCookie.token2`」
-    /// 取（见该模块头）；都没有时返回未配置错误。
+    /// 凭证按「转发链路的 `snapshot_for` → 账号记录里的 `balanceToken` →
+    /// 导入留下的 `balanceCookie.token2`」取（见该模块头）；三处都没有时返回
+    /// 未配置错误（`usage_not_configured`），不是普通失败。
     ///
     /// ── 401 之后**没有**刷新重试（这是本家与另外三家的关键差别）────
     /// 调用方（`api::accounts::query_usage_inner`）在 401 时会查
