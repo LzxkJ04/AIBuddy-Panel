@@ -122,10 +122,6 @@ body.has-titlebar .shell {
   .titlebar-brand .txt { display: none; }
 }
 
-/* 窄窗口（最小 820px）收起侧栏文字，只留图标 */
-@media (max-width: 900px) {
-  :root { --sidebar-w: 68px; }
-}
 
 /* ─────────────────────────────
    侧边栏
@@ -198,7 +194,6 @@ body.has-titlebar .shell {
 
 .nav-group-label:first-child { padding-top: 0; }
 
-@media (max-width: 900px) { .nav-group-label { display: none; } }
 
 .nav-item {
   min-height: 48px;
@@ -272,10 +267,6 @@ body.has-titlebar .shell {
 .nav-item .count:not(.muted) { border-color: var(--danger-bd); background: var(--danger-soft); color: var(--danger); }
 .nav-item.active .count:not(.muted) { background: var(--surface); }
 
-@media (max-width: 900px) {
-  .nav-item { justify-content: center; padding: 9px 0; }
-  .nav-item .label, .nav-item .count { display: none; }
-}
 
 /* 侧栏底部 */
 .sidebar-foot {
@@ -287,6 +278,7 @@ body.has-titlebar .shell {
   border-top: 1px solid var(--sidebar-border);
 }
 
+/* 侧栏的 ≤900px 图标栏规则已移除：手机端由 prefs.css 的抽屉模式（≤1000px，220px 全宽）接管 */
 /* ─── 网关状态 ───
    常驻在侧栏底部：网关是否在监听是本工具最基础的状态，
    不该只有切到「网关」页才能看到。
@@ -357,12 +349,6 @@ body.has-titlebar .shell {
 }
 
 /* 窄侧栏只留状态灯；按钮文字太长，一并收起（此时状态灯的颜色仍能提示异常） */
-@media (max-width: 900px) {
-  .sidebar-status { padding: 8px 6px; align-items: center; }
-  .status-line { justify-content: center; }
-  .sidebar-status .txt { display: none; }
-  .status-actions { display: none; }
-}
 
 .theme-switch {
   display: flex;
@@ -665,3 +651,12 @@ body.has-titlebar .shell {
 
 .page[data-page="logs"] .panel-body,
 .page[data-page="requests"] .panel-body { flex: 1; min-height: 0; }
+
+/* 品牌区版本号（prefs.js 填充，读取 /api/update/status 的 currentVersion） */
+.brand-version {
+  margin-top: 1px;
+  font-size: 10.5px;
+  line-height: 1.2;
+  color: var(--sidebar-muted);
+  font-family: var(--font-mono);
+}

@@ -1,0 +1,225 @@
+/* ─────────────────────────────────────────────
+   AIBuddy Panel · 顶栏通知中心样式（vue-next-admin 风格）
+   铃铛图标钮（同 prefs.css 的 .tb-icon-btn）+ 未读红点角标 +
+   右对齐下拉面板（340px）：标题行「最近事件」+ 刷新钮 +
+   事件列表（时间 HH:mm:ss / 级别圆点 / 分类 / 两行截断消息）+ 底部「查看全部」。
+   颜色一律走 tokens.css 变量，深色主题（html[data-theme=dark]）自动成立；
+   级别圆点口径与 page-logs.css 的 .log-dot 一致。
+   ───────────────────────────────────────────── */
+
+/* ── 顶栏独立容器与铃铛钮 ── */
+.nc-holder {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* 与 prefs.css 的 .tb-icon-btn 同款：这里复制一份，保证单独引入也成立 */
+.nc-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.nc-btn:hover { background: var(--nav-hover); color: var(--text); }
+.nc-btn.on { color: var(--primary); } /* 面板开着时图标点亮 */
+.nc-btn svg { display: block; }
+
+/* 未读角标：error / warn 未读条数（>99 显示 99+） */
+.nc-badge {
+  position: absolute;
+  top: -4px;
+  right: -5px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: var(--r-pill);
+  background: var(--danger);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+.nc-badge.on { display: inline-flex; }
+
+/* ── 下拉面板：挂 body、fixed 定位（.main 是 overflow:hidden，挂在顶栏会被裁掉）── */
+.nc-pop {
+  position: fixed;
+  z-index: 950; /* 高于内容与顶栏，低于偏好抽屉的遮罩（1000/1001） */
+  width: min(340px, calc(100vw - 24px));
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-3);
+  overflow: hidden;
+  display: none;
+  transform-origin: top right;
+}
+.nc-pop.open {
+  display: block;
+  animation: ncPop .16s ease;
+}
+@keyframes ncPop {
+  from { opacity: 0; transform: translateY(-6px) scale(.98); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* 标题行：最近事件 + 刷新 */
+.nc-pop-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--hairline);
+}
+.nc-title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
+.nc-head-sp { flex: 1 1 auto; }
+.nc-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.nc-refresh:hover { background: var(--nav-hover); color: var(--text); }
+.nc-refresh svg { display: block; }
+.nc-refresh.busy svg { animation: ncSpin .8s linear infinite; }
+@keyframes ncSpin { to { transform: rotate(360deg); } }
+
+/* ── 事件列表 ── */
+.nc-list {
+  max-height: 352px; /* 8 条 × 约 44px，超出滚动 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.nc-item {
+  display: flex;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--hairline);
+}
+.nc-item:last-child { border-bottom: none; }
+.nc-item:hover { background: var(--row-hover); }
+
+/* 级别圆点：info=--info、warn=--warn、error=--danger（同 .log-dot），缺级别给中性灰 */
+.nc-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.nc-dot.lv-info  { background: var(--info); }
+.nc-dot.lv-warn  { background: var(--warn); }
+.nc-dot.lv-error { background: var(--danger); }
+
+.nc-item-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.nc-item-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.nc-cat {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+/* warn / error 的分类小片跟着级别走淡底三件套（同 .log-lvl 的口径） */
+.nc-item.lv-warn .nc-cat {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-color: var(--warn-bd);
+}
+.nc-item.lv-error .nc-cat {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: var(--danger-bd);
+}
+.nc-time {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--text-3);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+/* 消息最多两行，超出省略 */
+.nc-msg {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  word-break: break-all;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 空态（含拉取失败的静默占位） */
+.nc-empty {
+  padding: 34px 0 36px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* ── 底部「查看全部」── */
+.nc-foot {
+  border-top: 1px solid var(--hairline);
+  padding: 6px;
+}
+.nc-viewall {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 7px 0;
+  border: none;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s;
+}
+.nc-viewall:hover { background: var(--primary-soft); }

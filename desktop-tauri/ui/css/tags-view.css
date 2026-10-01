@@ -1,0 +1,142 @@
+/* ─────────────────────────────
+   TagsView 页签栏（vue-next-admin 式）
+   由 js/tags-view.js 动态注入：.main 内、.content 之前。
+   颜色全部取 tokens.css 的变量，浅色 / 深色主题自动适配。
+   ───────────────────────────── */
+
+.tags-view {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  /* 与 .topbar / .content-inner 同一套「居中后左右留白」算法，
+     页签左缘和面包屑、内容对齐 */
+  padding: 8px max(var(--pad), calc((100% - var(--content-max)) / 2)) 9px;
+  border-bottom: 1px solid var(--hairline);
+
+  background: var(--surface);
+  border-bottom: 1px solid var(--hairline);
+  padding: 7px 14px;
+}
+
+/* 左侧页签滚动区：可横向滚，滚动条隐藏（宽度喂狗，见手机端媒体查询） */
+.tags-view .tags-scroll {
+  position: relative; /* 页签的 offsetLeft 相对本容器，revealTag 的滚动定位才准 */
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;          /* Firefox */
+  -ms-overflow-style: none;       /* 旧 Edge */
+}
+.tags-view .tags-scroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+/* 单个页签：非激活灰字，hover 变深；激活主色文字 + 主色软底 + 1.5px 主色描边 */
+.tags-view .tag {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 11px;
+  border: 1.5px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: color .15s ease, background-color .15s ease, border-color .15s ease;
+}
+
+.tags-view .tag:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.tags-view .tag.active {
+  /* 主色文字：--primary-fg 是主题为主色上下文调好的字色（深色下自动提亮） */
+  color: var(--primary-fg);
+  background: var(--primary-soft);
+  /* 主色描边：--primary-bd 是主色系描边令牌（深浅主题各自调好强度） */
+  border-color: var(--primary-bd);
+}
+
+/* 页签上的关闭钮：默认跟着字色淡化，hover 才显形 */
+.tags-view .tag-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-right: -3px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: .55;
+  transition: opacity .15s ease, background-color .15s ease;
+}
+
+.tags-view .tag-close:hover {
+  opacity: 1;
+  color: var(--primary-fg);
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+/* 右侧「全部关闭」 */
+.tags-view .tags-ops {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background-color .15s ease;
+}
+
+.tags-view .tags-ops:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
+/* 键盘可达：聚焦圈用主题的 ring 令牌 */
+.tags-view .tag:focus-visible,
+.tags-view .tag-close:focus-visible,
+.tags-view .tags-ops:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+/* 手机端：不做收纳 / 换行，页签横向滚即可（滚动条已隐藏） */
+@media (max-width: 768px) {
+  .tags-view {
+    gap: 8px;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tags-view .tag,
+  .tags-view .tag-close,
+  .tags-view .tags-ops {
+    transition: none;
+  }
+}

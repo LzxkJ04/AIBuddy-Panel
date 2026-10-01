@@ -46,3 +46,9 @@
 
 - 内嵌浏览器对**远程 https 站点**导航/截图经常超时，别死磕：本地 `python -m http.server` 起静态预览验证视觉；线上数据用服务器 `curl 127.0.0.1:3065` 或 SSH 里跑脚本验证。
 - ALTCHA 复选框是自定义元素（影子 DOM），Playwright `getByRole('checkbox')` 定位可能失败——`dom_cua.get_visible_dom()` 拿 node_id 再点。
+
+## 偏好系统与页签栏（v2.11.0）
+
+- **顶栏 `#topbar-status` 会被整体重写**：app.js 的 `renderTopbarStatus()` 每次刷新都整段替换该容器的内容，直接塞进去的自绘按钮必然被冲掉。自绘按钮必须放独立容器、插在它旁边（prefs.js 顶栏快捷组的做法），并挂 MutationObserver 监听容器变化、被重写后自动重挂（自愈）。
+- **http 非安全源没有 crypto.subtle**：ALTCHA 人机验证靠 `crypto.subtle` 做 SHA-256 解题，非 secure context 下该 API 不存在，验证框会永远转圈、登录卡死。本地预览必须走 `http://localhost`（localhost 属 secure context）或 https；生产环境 https 不受影响。
+- **岛按文件名字典序执行**：跨岛「先渲染 DOM、后立刻写入」的操作必须 `flushSync` 同步提交，否则前面的岛还没落 DOM、后面的写入扑空（docs-page → port-panel 即此坑，详见上面「React 岛时序」一节）。

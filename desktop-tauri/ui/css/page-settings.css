@@ -28,21 +28,26 @@
 }
 
 /* ─── 左栏：分类导航 ───
-   观感对齐主侧栏的 .nav-item，但不能直接复用那个类名：
+   观感对齐 Certd 的分类卡片，但不能直接复用主侧栏的 .nav-item 类名：
    app.js 的 showPage 会遍历所有 .nav-item 并按 data-page 重置 active，
-   设置页的分类项会被顺手清掉选中态（点分类后一切页就跳回「通用」）。 */
+   设置页的分类项会被顺手清掉选中态（点分类后一切页就跳回「通用」）。
+   卡片之间给 6px 呼吸位：描边卡片贴在一起会糊成一列灰条。 */
 .settings-nav {
   flex: 0 0 auto;
   width: 140px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
   padding-bottom: 4px;
   /* 分类多到装不下时自己可滚：此时出现第二条滚动条是正确的，
      但内容装得下时不会有任何滚动条 */
   overflow-y: auto;
 }
 
+/* 导航项：白底描边圆角卡片（浅色 = --surface 白卡，深色 = --surface 暗卡，
+   自动跟随主题），不再是平铺的 hover 染色条。所有颜色一律走令牌 ——
+   prefs.js 的主题色切换会覆写 --primary / --primary-soft / --primary-bd /
+   --primary-fg，这里不写死任何色值，跟着主题色走。 */
 .settings-nav-item {
   position: relative;
   display: flex;
@@ -51,23 +56,25 @@
      不覆盖的话三个分类会各自居中，看着不像一排导航 */
   justify-content: flex-start;
   width: 100%;
-  /* 高度沿用通用 button 的 30px，与主侧栏 .nav-item 等高（那儿的高度也来自这条基线）。
-     不另设 height / line-height：12.5px 的行盒远小于 30px，不会溢出 */
-  padding: 0 10px;
-  border: 1px solid transparent;
+  /* 取消通用 button 的固定 30px 高：卡片感靠上下内边距撑出，
+     图标与文字由 align-items:center 垂直居中 */
+  height: auto;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
   border-radius: var(--r-sm);
-  background: transparent;
-  /* 分类项是 <button>，components.css 里通用的 button 规则会给它带上
-     --shadow-1 —— 与「平铺的导航列表」冲突，这里显式清掉（.nav-item 同样处理） */
-  box-shadow: none;
+  background: var(--surface);
+  /* 卡片语气：一层浅投影托一下（压过 components.css 通用 button 的
+     --shadow-1 —— 同一个值，但语义是「卡片」而不是「按钮」） */
+  box-shadow: var(--shadow-1);
   color: var(--text-2);
   font-size: 12.5px;
   font-weight: 500;
   text-align: left;
-  transition: background .15s ease, color .15s ease;
+  transition: background .15s ease, border-color .15s ease, color .15s ease,
+              transform .15s ease, box-shadow .15s ease;
 }
 
-/* 分类图标槽：尺寸/取色与主侧栏的 .nav-item .ico 一致（17px 盒、currentColor，
+/* 分类图标槽：尺寸与主侧栏的 .nav-item .ico 一致（17px 盒、currentColor，
    选中态自动变主题色；svg 撑满盒子）。间距用 margin 而不是 gap —— 老浏览器之外
    没差别，但这里与 .nav-item 的写法保持一致，两处对照着读更容易。 */
 .settings-nav-item .ico {
@@ -81,41 +88,69 @@
 
 .settings-nav-item .ico svg { display: block; }
 
-/* hover：一层极淡的中性叠加底（与主侧栏同款表达式，浅色叠灰、深色叠白）。
-   带 :not(:disabled) 是为了压过 components.css 里通用的 button:hover ——
-   那个选择器特异性更高，否则会盖掉叠加底并给导航项描边。 */
+/* hover：抬升 1px + 主色软描边（--primary-bd 跟随 prefs.js 的主题色切换），
+   投影加深一档配合「浮起来」的手感。带 :not(:disabled) 是为了压过
+   components.css 里通用的 button:hover —— 那个选择器虽然特异性更低，
+   但它的 background / border-color 声明仍然有效，这里必须逐项覆盖。 */
 .settings-nav-item:hover:not(:disabled) {
-  background: var(--nav-hover);
-  border-color: transparent;
+  background: var(--surface);
+  border-color: var(--primary-bd);
   color: var(--text);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2);
 }
 
-/* 选中态：品牌浅底 + 主题色字，与主侧栏选中项同一口径。
-   一并声明 .active:hover，让悬停选中项时仍保持选中态。 */
+/* 选中态：主色软底 + 主色字 + 1.5px 主色描边。描边用 --primary 调透明度
+   而不是更浅的 --primary-bd：选中要比 hover 的软描边更笃定一档。
+   一并声明 .active:hover（与上面 hover 规则特异性相同，靠书写顺序取胜），
+   让悬停选中项时仍保持选中态。 */
 .settings-nav-item.active,
 .settings-nav-item.active:hover {
   background: var(--primary-soft);
-  border-color: transparent;
+  border-color: color-mix(in srgb, var(--primary) 55%, transparent);
+  border-width: 1.5px;
   color: var(--primary-fg);
   font-weight: 600;
 }
 
+/* 动效减免：抬升与过渡都关掉，位置与配色信息不变 */
+@media (prefers-reduced-motion: reduce) {
+  .settings-nav-item { transition: none; }
+  .settings-nav-item:hover:not(:disabled) { transform: none; }
+}
+
 /* ─── 右栏：分类内容 ───
    唯一的滚动容器；面板自带 margin-bottom 14px，这里只补回原来
-   .page.active 的 padding-bottom，让最后一张卡片不贴着底边。 */
+   .page.active 的 padding-bottom，让最后一张卡片不贴着底边。
+   桌面态在两栏之间画一条分隔线：线挂在内容栏左缘，padding-left
+   补回线以右的呼吸位 —— 导航 20px + 线 + 19px，节奏与页面其他
+   间距（--pad）一致。 */
 .settings-panes {
   flex: 1;
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
   padding-bottom: 20px;
+  border-left: 1px solid var(--hairline);
+  padding-left: calc(var(--pad) - 1px);
 }
 
 .settings-pane { display: none; }
 .settings-pane.active { display: block; }
 
+/* pane 内面板：圆角与阴影统一收在这条上 —— 基础 .panel（layout.css）是
+   shadow-2，设置页一栏里纵向堆着多张面板，统一收轻一档（描边为主、
+   投影为辅），与左导航的卡片同一份平面语气；圆角钉死 --r-lg，
+   防止日后基础值改动让设置页与其他页的面板圆角走样。 */
+.settings-pane .panel {
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
+}
+
 /* 窄窗口（与主侧栏收起的断点一致）：两栏退化为「导航在上、内容在下」，
-   导航转横排铺满整行；装不下时导航自己横向滚（下面 nav 的 overflow-x）。 */
+   导航转横排铺满整行；装不下时导航自己横向滚（下面 nav 的 overflow-x）。
+   卡片观感保留（横排 chips 与 ≤768px mobile.css 的规则衔接），只把
+   内边距与高度收回按钮基线；分隔线从竖转横。 */
 @media (max-width: 900px) {
   .settings-layout { flex-direction: column; gap: 12px; }
 
@@ -131,7 +166,17 @@
   .settings-nav-item {
     width: auto;
     flex: 0 0 auto;
+    /* 收回按钮基线的 30px：桌面态的 height:auto + 上下 7px 内边距
+       会让横排 chips 高一截，与 mobile.css ≤768px 的 chips 接不上 */
+    height: 30px;
     padding: 0 12px;
+  }
+
+  .settings-panes {
+    border-left: 0;
+    border-top: 1px solid var(--hairline);
+    padding-left: 0;
+    padding-top: 12px;
   }
 }
 

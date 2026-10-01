@@ -74,7 +74,7 @@ function LoginPage() {
         </svg>
         <div>
           <h1 className='m-0 text-[21px] font-bold tracking-[0.2px]'>AIBuddy Panel</h1>
-          <div className='text-[12.5px] text-muted-foreground'>OpenAI 兼容网关 · 管理面板</div>
+          <div className='text-[12.5px] text-muted-foreground'>多提供商 AI 网关 · 统一接入控制台</div>
         </div>
       </div>
 

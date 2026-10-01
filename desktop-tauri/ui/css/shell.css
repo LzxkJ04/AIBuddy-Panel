@@ -1,0 +1,58 @@
+/* ─────────────────────────────────────────────
+   AIBuddy Panel · 外壳层功能样式（侧栏折叠 / 全屏按钮）
+   按 vue-next-admin 规范：侧栏 220px / 折叠 64px，宽度 .3s ease；
+   侧栏阴影 2px 0 6px rgba(0,21,41,1%)；顶栏 50px 白底 + 1px 边框。
+   ───────────────────────────────────────────── */
+
+/* ── 桌面侧栏折叠（64px 图标栏）── */
+body.shell-collapsed .sidebar { width: 64px; }
+body.shell-collapsed .sidebar .brand { justify-content: center; padding-left: 0; padding-right: 0; }
+body.shell-collapsed .sidebar .brand-text { display: none; }
+body.shell-collapsed .sidebar .nav-group-label { text-align: center; padding-left: 0; padding-right: 0; font-size: 0; }
+body.shell-collapsed .sidebar .nav-group-label::after { content: '···'; font-size: 10px; letter-spacing: 2px; }
+body.shell-collapsed .sidebar .nav-item { justify-content: center; padding-left: 0; padding-right: 0; }
+body.shell-collapsed .sidebar .nav-item .label,
+body.shell-collapsed .sidebar .nav-item .count { display: none; }
+body.shell-collapsed .sidebar .sidebar-foot { padding-left: 0; padding-right: 0; }
+body.shell-collapsed .sidebar .sidebar-foot .txt { display: none; }
+body.shell-collapsed .sidebar .sidebar-foot .sidebar-status { justify-content: center; }
+
+/* 折叠开关按钮（侧栏底部） */
+.shell-toggle {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; padding: 8px 0; margin-top: 6px;
+  border: none; border-radius: var(--r-sm);
+  background: transparent; color: var(--sidebar-muted);
+  font-size: 12px; cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.shell-toggle:hover { background: var(--nav-hover); color: var(--nav-selected-fg); }
+.shell-toggle svg { flex-shrink: 0; transition: transform .3s ease; }
+body.shell-collapsed .shell-toggle svg { transform: rotate(180deg); }
+
+/* 侧栏阴影 + 宽度过渡（vue-next-admin：width .3s ease） */
+.sidebar { transition: width .3s ease; box-shadow: 2px 0 6px rgba(0, 21, 41, 0.01); }
+
+/* 折叠态提示：label 藏了，靠 title 属性给悬停提示（js 负责） */
+
+/* ── 顶栏全屏按钮（与 pref-buttons 同款 30px 图标钮）── */
+#shell-btn-fullscreen {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; padding: 0;
+  border: none; border-radius: var(--r-sm);
+  background: transparent; color: var(--text-2);
+  cursor: pointer; transition: background .15s, color .15s;
+}
+#shell-btn-fullscreen:hover { background: var(--nav-hover); color: var(--text); }
+
+/* ── 手机端隐藏折叠开关（抽屉模式不需要）── */
+@media (max-width: 1000px) {
+  .shell-toggle { display: none; }
+}
+
+/* 折叠态：底部主题三键收起（图标栏放不下） */
+body.shell-collapsed .sidebar .sidebar-foot .theme-switch { display: none; }
+
+/* 侧栏主题键保持横排（抽屉模式窄容器下曾被挤成竖排） */
+.sidebar .theme-switch { flex-wrap: nowrap; }
+.sidebar .theme-switch button { flex: 1; }

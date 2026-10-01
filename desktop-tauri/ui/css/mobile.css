@@ -1,0 +1,72 @@
+/* ─────────────────────────────────────────────
+   AIBuddy Panel · 移动端适配（≤768px / ≤480px 两档）
+   职责边界（与其他文件的分工，改前先读）：
+   · ≤1000px 侧栏抽屉化（汉堡键 + 遮罩）、≤768px 面包屑隐藏、
+     ≤640px 抽屉全宽兜底与字号收敛 —— prefs.css 已覆盖，这里不重复、不冲突；
+   · 设置页两栏 ≤900px 退化为上下排 + 导航横排横滚 —— page-settings.css 已覆盖，
+     这里只补导航项的「白底描边 chips」观感；
+   · 引入顺序：本文件须在 index.html 里排在 prefs.css / shell.css 与全部
+     page-*.css 之后（建议 update-notes.css 之后、islands/ui.css 之前），
+     覆盖既有声明靠级联顺序取胜，不使用 !important。
+   ───────────────────────────────────────────── */
+
+/* ── ≤768px：间距收敛 / 面板减饰 / 弹窗全宽 / 设置导航 chips / 宽列表横滚 ── */
+@media (max-width: 768px) {
+
+  /* 内容左右留白再收一档：.content 自身还有 --pad（≤1000px 时 14px），
+     这条是内层 .content-inner 的追加内边距（prefs.css 同位是 12px，这里更窄） */
+  .content-inner {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  /* 面板减饰：小屏圆角收一档、去掉投影，把宽度还给内容 */
+  .panel {
+    border-radius: var(--r-md);
+    box-shadow: none;
+  }
+  /* 面板体兜底：内嵌内容（长配置串、按钮组）不许把面板横向撑破 */
+  .panel-body { min-width: 0; }
+
+  /* 弹窗全宽：偏好抽屉 ≤640px 才全宽（prefs.css），这里把全宽提前到 ≤768px */
+  .pref-drawer { width: 100vw; }
+
+  /* 设置页导航 → 顶部横向可滚动 chips：横排与横滚是 page-settings.css
+     ≤900px 的活，这里只把每个分类项收窄成白底描边的小胶囊（深浅主题下
+     分别取 --surface / --border，自动跟随）。选中态由更高特异性的
+     .settings-nav-item.active（page-settings.css）保持，不会被这条盖掉。 */
+  .settings-nav { gap: 6px; }
+  .settings-nav-item {
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  /* 宽列表兜底横滚：账号表（.acct-scroll）/ 模型表（.models-table-wrap）/
+     请求记录（#req-list）本就自带横向滚动；日志列表（.log-list）只有纵向，
+     这里补齐横向 */
+  .log-list { overflow-x: auto; }
+}
+
+/* ── ≤480px：字号 / 卡片网格单列 / 欢迎横幅纵排 ── */
+@media (max-width: 480px) {
+
+  /* 字号整体收敛一档（≤640px prefs.css 收到 12.5px，这里再收） */
+  body { font-size: 12px; }
+
+  /* 统计 / 维护卡片网格回落单列：.task-grid 在 ≤1120px、.retention-list
+     在 ≤640px 已各自回落，这里兜底再钉一次，防断点日后改动漏掉极窄屏 */
+  .task-grid,
+  .retention-list { grid-template-columns: minmax(0, 1fr); }
+
+  /* 欢迎横幅纵向排列：问候与日期在上，三步指引整行换到下面
+     （≤1000px prefs.css 已放开换行并把 .ab-steps 的 margin-left 清零，
+     这里把排列方向也从横向改纵向；margin-left: 0 再钉一次防列向自动边距） */
+  .aibuddy-banner {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ab-steps { margin-left: 0; }
+}
