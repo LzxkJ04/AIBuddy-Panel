@@ -154,7 +154,7 @@ pub struct RequestStats {
     ///
     /// 语义从「明细文件 / 聚合文件」变成「装着这两份数据的库文件」—— 与
     /// `LogStore::file()` / `AccountStore::file()` 的处理一致。库打不开时回落到
-    /// 约定路径（`{config_dir}/agent2api.db`）：这个值会显示在报表页与设置页的
+    /// 约定路径（`{config_dir}/aibuddy-panel.db`）：这个值会显示在报表页与设置页的
     /// 存储概况里（`api::storage_api` 读它），给一个有意义的位置比给空串更有用。
     ///
     /// 为什么是 `RwLock` 而不是裸字段：与 `LogStore::file_path` 同一处理 ——

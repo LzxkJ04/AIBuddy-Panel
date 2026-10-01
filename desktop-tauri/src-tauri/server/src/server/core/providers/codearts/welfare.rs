@@ -687,7 +687,7 @@ mod tests {
         let id = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!("codearts-welfare-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let store = AccountStore::with_db(Some(Db::open(&dir.join("agent2api.db")).expect("临时库应当能建起来")));
+        let store = AccountStore::with_db(Some(Db::open(&dir.join("aibuddy-panel.db")).expect("临时库应当能建起来")));
         store
             .add_codearts_account(
                 &Credential {

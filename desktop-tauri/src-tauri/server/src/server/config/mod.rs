@@ -1472,7 +1472,7 @@ pub fn set_prompt_gateway(provider_id: &str, flag: Option<bool>) -> bool {
 // ─── 数据保存目录（logDir / requestStatsDir / debugDir）────────//
 // ── 为什么这里**只剩读**，没有对应的写函数（T8 收尾的一处）──────
 // 三个键在数据全部进统一库之后**失去了消费方**：日志、请求统计、调试报文都
-// 落在 `{config_dir}/agent2api.db` 里，不再有「各自的保存目录」。曾经的那个
+// 落在 `{config_dir}/aibuddy-panel.db` 里，不再有「各自的保存目录」。曾经的那个
 // 写入口 `set_storage_dir(key, dir)` 是给设置页三个「更改…」按钮用的，
 // 而它现在**一个调用方都没有**（那三个按钮已随单页改成只读而删除），
 // 于是整体删掉 —— 留一个没人调用的写函数，下次有人读到它只会以为

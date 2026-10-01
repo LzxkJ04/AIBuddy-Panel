@@ -1,7 +1,7 @@
 [package]
 name = "workbuddy-proxy-desktop"
 version = "2.11.0"
-description = "Agent2API 桌面端 — 多提供商本地网关与会话管理"
+description = "AIBuddy Panel 桌面端 — 多提供商本地网关与会话管理"
 authors = ["aimod-cc"]
 edition = "2021"
 # MSRV 由 rusqlite 0.40 → libsqlite3-sys 0.38 决定（它的声明值是 1.88）。
@@ -120,7 +120,7 @@ md-5 = "0.10"
 # 且 AES-CBC / MD5 / 请求体编码的密文与 Node 逐字节一致）。
 num-bigint = "0.4"
 # 本地存储：数据从「一堆 JSON / JSONL 文件」收敛到单文件 SQLite
-# （`{config_dir}/agent2api.db`，见 server/db/）。之所以现在引入：
+# （`{config_dir}/aibuddy-panel.db`，见 server/db/）。之所以现在引入：
 # 现在的形态是「每个 store 各自持一份全量内存快照 + 整文件重写」，
 # 日志/统计/账号三份数据的裁剪、迁移、崩溃恢复各写各的，口径迟早会分叉；
 # 交给 SQLite 之后这些都由事务与索引保证，库是唯一真相。

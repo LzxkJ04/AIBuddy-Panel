@@ -11,7 +11,7 @@
 //! raw、详情接口才返回」同一取舍。
 //!
 //! ── 存储位置 ────────────────────────────────────────────────
-//! 报文与其余数据同居 `{config_dir}/agent2api.db`（库位置见 `/api/storage`
+//! 报文与其余数据同居 `{config_dir}/aibuddy-panel.db`（库位置见 `/api/storage`
 //! 的单库概况），这里只管开关与读取。
 
 use axum::body::Bytes;

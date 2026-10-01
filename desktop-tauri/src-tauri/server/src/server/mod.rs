@@ -30,7 +30,7 @@
 //!     mod.rs        句柄与公开 API（幂等写入、降级、导出）
 //!     sql.rs        行级 SQL 访问层 + 筛选条件编译
 //!   errors.rs       网关错误类型 + OpenAI 风格错误 payload
-//!   db/             本地存储的**唯一真相**（单文件 SQLite `{config_dir}/agent2api.db`）：
+//!   db/             本地存储的**唯一真相**（单文件 SQLite `{config_dir}/aibuddy-panel.db`）：
 //!     mod.rs        连接与句柄（`Db::open` / `with` / `with_mut` / `file`）
 //!     schema.rs     全部建表 DDL 与 `PRAGMA user_version` 逐版本升级
 //!     migrate/      旧文件 → 库的一次性迁移（框架 + 每个迁移项一个文件）
@@ -63,7 +63,7 @@
 //!     endpoints.rs 端点/版本/UA/上下文（唯一事实来源）
 //!     account_store/  账号存储（优先级、迁移、CRUD、限额标记）。
 //!                 持久化已从 `{config_dir}/accounts.json` 换到
-//!                 `agent2api.db` 的 `accounts` 表；`sql.rs` 是行级访问层，
+//!                 `aibuddy-panel.db` 的 `accounts` 表；`sql.rs` 是行级访问层，
 //!                 `store_view.rs` 是公开形态与快照
 //!     account_transfer.rs  账号导入导出
 //!     auth.rs      会话读取、getStatus、鉴权头、token 刷新

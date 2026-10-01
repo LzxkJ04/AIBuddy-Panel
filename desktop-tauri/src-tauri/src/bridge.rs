@@ -522,7 +522,7 @@ const BRIDGE_JS: &str = r#"
     saveRetention: patch => call('PUT', '/api/retention', patch),
 
     // ── 数据存储概况（设置页「保存位置」）──
-    // 只读：数据统一在配置目录的 agent2api.db 里，不再支持换目录
+    // 只读：数据统一在配置目录的 aibuddy-panel.db 里，不再支持换目录
     // （改造前的 relocateStorage / storageProgress 两条写命令已随单库语义删除，
     //  见 server/api/storage_api.rs 的模块头）。
     getStorage: () => call('GET', '/api/storage'),

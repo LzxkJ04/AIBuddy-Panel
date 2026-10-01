@@ -8,7 +8,7 @@
 //! 条件），写入侧冲突一律 409，详见 `priority.rs` 模块头。
 //!
 //! ── 持久化：`accounts.json` → SQLite `accounts` 表（本切片的改造）────
-//! 数据从 `{config_dir}/accounts.json` 换到 `{config_dir}/agent2api.db` 的
+//! 数据从 `{config_dir}/accounts.json` 换到 `{config_dir}/aibuddy-panel.db` 的
 //! `accounts` 表（表结构见 `server/db/schema.rs`）。**对外契约一字未改**：
 //! 本文件的 `pub fn` 签名、返回值、错误码全部与改造前相同，调用方
 //! （`api::accounts`、`auth`、`routing`、各 provider 适配器）零改动。
@@ -112,7 +112,7 @@ struct Inner {
     /// 与之相对，`Db::open` 失败**不阻断启动**（网关仍能跑转发、日志、模型）——
     /// 这是 `ServerState::bootstrap` 已有的决定，本层只是如实承接它的后果。
     db: Option<Db>,
-    /// 库文件的**约定路径**（`{config_dir}/agent2api.db`）。
+    /// 库文件的**约定路径**（`{config_dir}/aibuddy-panel.db`）。
     ///
     /// 为什么单独存一份：`file()` / `file_string()` 的契约是「给出账号数据所在的
     /// 文件位置」，而它有两个消费方都要求这个值非空 —— `/api/session` 的

@@ -551,7 +551,7 @@ mod store_hooks {
         let id = SEQ.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!("codearts-hooks-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        AccountStore::with_db(Some(Db::open(&dir.join("agent2api.db")).expect("临时库应当能建起来")))
+        AccountStore::with_db(Some(Db::open(&dir.join("aibuddy-panel.db")).expect("临时库应当能建起来")))
     }
 
     /// `minutes` 之后到期（负数即已过期）。

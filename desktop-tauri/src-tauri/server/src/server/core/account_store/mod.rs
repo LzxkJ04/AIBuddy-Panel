@@ -1,7 +1,7 @@
 //! 账号存储（对照 Node 版 src/workbuddy-account-store.mjs 全量移植）。
 //!
 //! ── 持久化：SQLite `accounts` 表（本切片从 accounts.json 迁过来）────
-//! 数据落在 `{config_dir}/agent2api.db` 的 `accounts` 表里（表结构见
+//! 数据落在 `{config_dir}/aibuddy-panel.db` 的 `accounts` 表里（表结构见
 //! `server/db/schema.rs`）。每条记录一行，`data` 列存**整条账号记录的 JSON
 //! 原文**（下面不变量 1 的实现方式），另有 `id` / `provider` / `priority` /
 //! `enabled` / `added_at` 五列是从 JSON 派生的**查询投影**（排序/筛选/唯一性

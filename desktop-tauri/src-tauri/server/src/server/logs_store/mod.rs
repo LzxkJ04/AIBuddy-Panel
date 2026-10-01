@@ -2,7 +2,7 @@
 //!
 //! 对照 Node 版 `src/workbuddy-logs.mjs` 逐条实现**行为**，但持久化形态换了：
 //! Node 版是「一行一条 JSON 追加写 + 启动时载入内存」；这里是
-//! `{config_dir}/agent2api.db` 的 `logs` 表（表结构见 `server/db/schema.rs`），
+//! `{config_dir}/aibuddy-panel.db` 的 `logs` 表（表结构见 `server/db/schema.rs`），
 //! 库就是唯一真相，不再有内存快照。
 //!
 //! ── 「内存快照 + 文件镜像」这套机制为什么整体消失 ─────────────
@@ -279,7 +279,7 @@ pub struct LogStore {
     ///
     /// 取自 `Db::file()`，语义是「装着日志数据的库文件」—— 与 T2 对
     /// `AccountStore::file()` 的处理一致。库打不开时回落到约定路径
-    /// （`{config_dir}/agent2api.db`）：这个值会显示在日志页的「文件」一栏
+    /// （`{config_dir}/aibuddy-panel.db`）：这个值会显示在日志页的「文件」一栏
     /// （`ui/logs-panel.js:268`），给一个有意义的位置比给空串更有用。
     ///
     /// 为什么是 `RwLock` 而不是裸字段：字段本身不再被任何写路径改动

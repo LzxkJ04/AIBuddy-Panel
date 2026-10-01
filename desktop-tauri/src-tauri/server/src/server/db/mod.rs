@@ -1,4 +1,4 @@
-//! 本地存储的**唯一真相**：单文件 SQLite 库 `{config_dir}/agent2api.db`。
+//! 本地存储的**唯一真相**：单文件 SQLite 库 `{config_dir}/aibuddy-panel.db`。
 //!
 //! ── 这一层要解决什么问题 ────────────────────────────────────
 //! 改造前所有数据都是「文件 + 全量内存快照」：config.json、accounts.json、
@@ -86,12 +86,51 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
 
+use crate::server::logging;
+
 /// 数据库文件名。放配置目录（`~/.agent2api`）里，与 config.json / 日志并排 ——
 /// 用户在设置页看到的「配置目录」就是这一个位置，备份与排障只需要它。
 /// 路径由 `config::config_dir()` 派生，本模块不自己去查 home 目录。
 /// （接入本库的五个 store —— 账号、事件日志、请求统计、调试报文、脱敏词表 ——
 /// 改造后都不再有自己的文件名，它们的数据都在本库的各张表里。）
-pub const FILE_NAME: &str = "agent2api.db";
+pub const FILE_NAME: &str = "aibuddy-panel.db";
+
+/// 旧版数据文件名（v2.11.0 前的 aibuddy-panel.db）——启动时自动迁移到新名，
+/// 保证既有数据无感升级（文件连同 -wal/-shm 一起改名，不复制不留旧文件）。
+pub const LEGACY_FILE_NAME: &str = "aibuddy-panel.db";
+
+/// 旧数据文件自动迁移：`old` 存在且 `new` 缺失 → 连同 -wal/-shm 改名。
+/// 独立函数便于测试；幂等（任一条件不满足即无操作）。
+fn migrate_legacy_db_file(new_path: &Path) {
+    let dir = match new_path.parent() {
+        Some(d) => d,
+        None => return,
+    };
+    let old = dir.join(LEGACY_FILE_NAME);
+    if !old.exists() || new_path.exists() {
+        return;
+    }
+    let rename = |suffix: &str| {
+        let from = dir.join(format!("{}{}", LEGACY_FILE_NAME, suffix));
+        let to = dir.join(format!("{}{}", FILE_NAME, suffix));
+        if from.exists() {
+            if let Err(error) = std::fs::rename(&from, &to) {
+                logging::log(
+                    "[Db]",
+                    &format!("⚠️ 旧数据文件迁移失败（{} → {}）: {}", from.display(), to.display(), error),
+                );
+                return false;
+            }
+        }
+        true
+    };
+    if rename("") && rename("-wal") && rename("-shm") {
+        logging::log(
+            "[Db]",
+            &format!("✅ 旧数据文件已迁移：{} → {}", LEGACY_FILE_NAME, FILE_NAME),
+        );
+    }
+}
 
 /// SQLite 连接句柄。`Clone` 共享**同一个**连接（内部 `Arc`）。
 ///
@@ -145,6 +184,11 @@ impl Db {
                     .map_err(|error| format!("创建数据库目录失败: {error}"))?;
             }
         }
+        // 旧文件名迁移：v2.11.0 起 aibuddy-panel.db 改名 aibuddy-panel.db。
+        // 新名缺失且旧名存在 → 连同 -wal/-shm 一起改名（原子性的单文件库，
+        // 改名即迁移；WAL/SHM 不迁会丢未 checkpoint 的页）。失败只记日志
+        // 不阻断启动 —— SQLite 会新建空库，旧文件原样保留可手工恢复。
+        migrate_legacy_db_file(path);
         let conn = Connection::open(path).map_err(|error| format!("打开数据库失败: {error}"))?;
         apply_pragmas(&conn)?;
         schema::migrate(&conn).map_err(|error| format!("建表/升级 schema 失败: {error}"))?;

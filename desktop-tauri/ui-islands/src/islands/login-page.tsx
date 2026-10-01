@@ -1,5 +1,5 @@
 /**
- * Agent2API · 登录 / 首次注册页（ui/login.html）—— React 岛。
+ * AIBuddy Panel · 登录 / 首次注册页（ui/login.html）—— React 岛。
  *
  * 这一页独立于主面板（没有 index.html 那套骨架，也不属于任何 .page），界面整块由
  * 本岛渲染。但**登录逻辑仍归页面底部那段内联脚本**：它按 id 直接读写
