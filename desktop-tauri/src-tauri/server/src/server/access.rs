@@ -348,6 +348,9 @@ pub struct IssuedSession {
 
 impl IssuedSession {
     fn issue(session: String) -> Self {
+        // 会话管理（见下方 SESSION_META）：登记创建时刻；轮换路径复用同一
+        // 会话链，or_insert 语义保证 created_at 不被刷新
+        note_session_created(&session);
         let access_token = random_hex(32);
         let refresh_token = random_hex(48);
         match access_tokens().lock() {
@@ -405,12 +408,22 @@ pub fn session_valid(headers: &HeaderMap) -> bool {
         return false;
     };
     let now = Instant::now();
-    let mut table = match access_tokens().lock() {
-        Ok(table) => table,
-        Err(poisoned) => poisoned.into_inner(),
+    // 会话链 id 在锁块内取出（会话管理要记「最近活动」），锁本身不跨函数边界
+    let session = {
+        let mut table = match access_tokens().lock() {
+            Ok(table) => table,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        table.retain(|_, (_, expiry)| *expiry > now);
+        table.get(&token).map(|(session, _)| session.clone())
     };
-    table.retain(|_, (_, expiry)| *expiry > now);
-    table.contains_key(&token)
+    match session {
+        Some(session) => {
+            note_session_activity(&session);
+            true
+        }
+        None => false,
+    }
 }
 
 /// 用 refresh token 轮换出新一组令牌（同一会话链）。
@@ -487,6 +500,161 @@ fn revoke_access_of_session(session: &str) {
         Err(poisoned) => poisoned.into_inner(),
     };
     table.retain(|_, (session_of, _)| session_of != session);
+}
+
+// ── 会话管理（面板「会话管理」页：列出 / 强制下线）────────────
+//
+// 本节是会话管理切片对 access.rs 的**唯一**扩展：三处改动分别是
+//   ① SESSION_META 元数据表 + 两个登记点（issue / session_valid）；
+//   ② `list_sessions`（列活跃会话链）；
+//   ③ `session_id_of` / `revoke_session_by_id`（定位当前会话 / 按 id 下线）。
+// 既有令牌模型（签发 / 轮换 / 重放检测 / 登出）的逻辑一行未动。
+//
+// ── 元数据为什么单独一张内存表 ─────────────────────────────
+// 「创建时刻 / 最近活动」不在既有结构里：AccessTable 的值是 (链, 过期时刻)，
+// RefreshRecord 是持久化形状（改它会影响 kv 里那份 JSON 的兼容性）。
+// 元数据只服务展示，进程重启后随 access 令牌一起消失是**正确**语义
+// （重启后活跃会话本来就要靠 refresh 重新换发），所以放内存、不落盘。
+// 登记点是 or_insert / and_modify：issue 在轮换路径也会走到（同一链再签
+// access），不能把 created_at 刷掉。登出 / 重放作废后元数据条目会残留，
+// 但 `list_sessions` 只列**仍有活令牌或活刷新链**的会话，残留项不可见，
+// 量级也是个位数，不值得为此再动登出路径。
+
+/// 一条活跃会话链的展示元数据（毫秒 Unix 时间戳）
+struct SessionMeta {
+    created_at: i64,
+    last_seen_at: i64,
+}
+
+static SESSION_META: OnceLock<Mutex<HashMap<String, SessionMeta>>> = OnceLock::new();
+
+fn session_meta() -> &'static Mutex<HashMap<String, SessionMeta>> {
+    SESSION_META.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn note_session_created(session: &str) {
+    let now = now_ms();
+    let mut table = match session_meta().lock() {
+        Ok(table) => table,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    table
+        .entry(session.to_string())
+        .or_insert(SessionMeta { created_at: now, last_seen_at: now });
+}
+
+fn note_session_activity(session: &str) {
+    let now = now_ms();
+    let mut table = match session_meta().lock() {
+        Ok(table) => table,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    table
+        .entry(session.to_string())
+        .and_modify(|meta| meta.last_seen_at = now)
+        .or_insert(SessionMeta { created_at: now, last_seen_at: now });
+}
+
+/// 列出当前活跃的面板登录会话（会话管理页的数据源）。
+///
+/// 「活跃」= 该会话链仍有**未过期的 access token** 或**未过期的 refresh
+/// 记录**（二者任一）：access 过期后浏览器还能凭 refresh 静默换新，只看
+/// access 会把还活着的会话漏掉。会话标识是会话链 id（`random_hex(16)`，
+/// 不是任何令牌本体 —— 拿它换不出访问权，展示与吊销引用都安全）。
+/// `createdAt` / `lastActivity` 取自进程内元数据，重启前的历史拿不到
+/// （见上节说明），给 0，由前端显示为「—」。
+pub fn list_sessions() -> Vec<serde_json::Value> {
+    let now = now_ms();
+    let now_instant = Instant::now();
+    let mut chains: Vec<String> = Vec::new();
+    {
+        let table = match access_tokens().lock() {
+            Ok(table) => table,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        for (session, expiry) in table.values() {
+            if *expiry > now_instant && !chains.contains(session) {
+                chains.push(session.clone());
+            }
+        }
+    }
+    {
+        let table = match refresh_tokens().lock() {
+            Ok(table) => table,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        for record in table.iter() {
+            if record.expires_at > now && !chains.contains(&record.session) {
+                chains.push(record.session.clone());
+            }
+        }
+    }
+    let meta = match session_meta().lock() {
+        Ok(meta) => meta,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    chains
+        .iter()
+        .map(|session| {
+            let entry = meta.get(session);
+            serde_json::json!({
+                "sessionId": session,
+                "createdAt": entry.map(|meta| meta.created_at).unwrap_or(0),
+                "lastActivity": entry.map(|meta| meta.last_seen_at).unwrap_or(0),
+            })
+        })
+        .collect()
+}
+
+/// 请求当前所属的会话链 id（按 access cookie 定位；无有效令牌时 None）。
+/// 会话吊销端点用它挡住「吊销自己正在用的会话」。
+pub fn session_id_of(headers: &HeaderMap) -> Option<String> {
+    let token = cookie_value(headers, ACCESS_COOKIE)?;
+    let table = match access_tokens().lock() {
+        Ok(table) => table,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    table.get(&token).map(|(session, _)| session.clone())
+}
+
+/// 按会话链 id 强制下线：refresh 链整条撤销（落盘）+ 该链所有 access
+/// token 作废。返回 false = 没有这条会话（或它已经没有任何活凭证）。
+///
+/// 与 `revoke_session`（登出：按调用方自己的 cookie 定位）不同，这里按
+/// **管理员指定的 id** 删别人的会话 —— 调用方（sessions_api）必须先挡掉
+/// 「目标 == 自己当前会话」的请求。
+pub fn revoke_session_by_id(session: &str) -> bool {
+    let removed_refresh = {
+        let mut table = match refresh_tokens().lock() {
+            Ok(table) => table,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let before = table.len();
+        table.retain(|record| record.session != session);
+        let removed = table.len() != before;
+        if removed {
+            persist_refresh_tokens(&mut table);
+        }
+        removed
+    };
+    let removed_access = {
+        let mut table = match access_tokens().lock() {
+            Ok(table) => table,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let before = table.len();
+        table.retain(|_, (session_of, _)| session_of != session);
+        table.len() != before
+    };
+    match session_meta().lock() {
+        Ok(mut meta) => {
+            meta.remove(session);
+        }
+        Err(poisoned) => {
+            poisoned.into_inner().remove(session);
+        }
+    }
+    removed_refresh || removed_access
 }
 
 fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {

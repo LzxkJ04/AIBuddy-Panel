@@ -20,7 +20,9 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Spinner,
   Switch,
+  Textarea,
 } from '@ui'
 import {
   CATEGORIES,
@@ -28,6 +30,7 @@ import {
   LANGUAGES,
   NOTES,
   NOTIFY_READ_KEY,
+  NOTIFY_TYPES,
   PREFS_EVENT,
   PREFS_KEY,
   PREFS_LOCK_ACTIVE_KEY,
@@ -49,16 +52,23 @@ import {
   TIMEOUT_FIELDS,
   ZOOM_EVENT,
   ZOOM_PERCENTS,
+  emptyNotifyConfig,
   formatBytes,
   formatCount,
+  newNotifyChannelId,
   normalizeShellPrefs,
+  notifyChannelSummary,
+  notifyTypeLabel,
+  notifyTypeSpec,
   openExternal,
   parseInteger,
   readThemeMode,
   readZoomPercent,
   shared,
   toast,
+  validateNotifyChannel,
   type GatewayBlocks,
+  type NotifyChannel,
   type NumberField,
   type ShellPrefs,
   type ThemeMode,
@@ -74,6 +84,7 @@ import {
   load,
   panelLogout,
   refreshDebug,
+  refreshNotify,
   refreshPrompt,
   refreshQueue,
   refreshRetention,
@@ -81,6 +92,7 @@ import {
   refreshSanitize,
   refreshStorage,
   refreshTimeouts,
+  removeNotifyChannel,
   removeProviderPrompt,
   removeRetryCode,
   renderDebug,
@@ -94,6 +106,9 @@ import {
   restoreCategory,
   saveCaptcha,
   saveDebug,
+  saveNotifyAlerts,
+  saveNotifyChannels,
+  saveNotifyQuiet,
   savePromptFile,
   savePromptMode,
   saveProviderGatewayPrompt,
@@ -107,9 +122,12 @@ import {
   saveToggle,
   selectCategory,
   showCategory,
+  testNotifyChannel,
+  toggleNotifyChannel,
   useSettings,
   type DebugState,
   type LoadStatus,
+  type NotifyState,
   type NumericState,
   type PromptState,
   type ProviderPromptOption,
@@ -176,11 +194,22 @@ import {
 
 /**
  * 图标（icons.js 的内联 SVG 串）：整站共用一份图标集，这里只做注入。
- * 图标在 set（左栏分类）里都已存在于 icons.js；取不到时返回空串（图标位留空，
- * 不影响文字与点击 —— 按名字取不到是开发期错误，不该把页面弄崩）。
+ * 图标在 set（左栏分类）里都已存在于 icons.js；取不到时先查 FALLBACK_ICONS
+ * 再给空串（按名字取不到是开发期错误，不该把页面弄崩）。
  */
 function iconHtml(name: string, size: number): string {
-  return shared().wbIcons?.icon?.(name, size) || ''
+  return shared().wbIcons?.icon?.(name, size) || FALLBACK_ICONS[name] || ''
+}
+
+/**
+ * icons.js 里**还没有**的图标的视图层兜底（「通知中心」分类的 bell）：
+ * 几何取 Feather 的 bell，画法与设置页分类那组描边图标同一套约定
+ * （24 画布、stroke 2、圆头圆角、currentColor）—— icons.js 补上这个键后
+ * 这里的兜底就不再被命中，两处几何一致，不会跳变。
+ */
+const FALLBACK_ICONS: Record<string, string> = {
+  bell: '<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></g>',
 }
 
 /** 三态徽章：`.badge`（检测中…）/ `.badge.ok` / `.badge.bad` → Badge 的 variant */
@@ -1868,6 +1897,8 @@ function DeployRow({ label, value, hint }: { label: string; value: React.ReactNo
  */
 function DeployPane({ snap }: { snap: SettingsSnapshot }) {
   const [version, setVersion] = React.useState('')
+  /** 「检查更新」请求在途：按钮禁用（连点只会重复打 GitHub，白耗匿名限额） */
+  const [checking, setChecking] = React.useState(false)
   React.useEffect(() => {
     let alive = true
     void (async () => {
@@ -1880,6 +1911,49 @@ function DeployPane({ snap }: { snap: SettingsSnapshot }) {
     })()
     return () => { alive = false }
   }, [])
+
+  /**
+   * 「检查更新」入口行（顶栏偏好抽屉与页脚已有同款，这里是设置页的入口）：fetch
+   * /api/update/check 把当前版本交给后端比较（后端 parse_version 自己剥 v 前缀）。
+   * 当前版本优先读品牌区 .brand-version 的文本（如 v1.2.3，剥掉 v 再传，口径照
+   * prefs.js 的 checkUpdate）；读不到再用上面 getUpdateStatus 拿到的 version（同一份
+   * /api/update/status 的读数）；都没有就缺省传空 —— 后端按无法比较处理。响应按
+   * hasUpdate 三态给说法；null（版本无法比较）/ 未登录 / 网络失败都归「检查失败」。
+   */
+  async function checkUpdateNow(): Promise<void> {
+    if (checking) return
+    setChecking(true)
+    try {
+      let current = ''
+      const brand = document.querySelector('.brand-version')
+      if (brand?.textContent) {
+        const matched = brand.textContent.trim().match(/^v?([0-9][0-9A-Za-z.\-+]*)$/i)
+        if (matched) current = matched[1]
+      }
+      if (!current && version && version !== '—') current = version
+      const response = await fetch(
+        '/api/update/check' + (current ? `?current=${encodeURIComponent(current)}` : ''),
+        { headers: { Accept: 'application/json' } },
+      )
+      const env = (response.ok ? await response.json() : null) as {
+        data?: { hasUpdate?: boolean | null; latestVersion?: string | null }
+      } | null
+      const data = env?.data
+      if (data?.hasUpdate === true) {
+        let latest = String(data.latestVersion || '')
+        if (latest && latest.charAt(0) !== 'v' && latest.charAt(0) !== 'V') latest = `v${latest}`
+        toast(`发现新版本 ${latest}，请到 设置→更新 下载`)
+      } else if (data?.hasUpdate === false) {
+        toast('已是最新版本')
+      } else {
+        toast('检查失败', 'err')
+      }
+    } catch {
+      toast('检查失败', 'err')
+    } finally {
+      setChecking(false)
+    }
+  }
 
   const isWeb = snap.panelLogin
   const https = window.location.protocol === 'https:'
@@ -1972,6 +2046,23 @@ function DeployPane({ snap }: { snap: SettingsSnapshot }) {
               value={storageReady ? `${formatCount(storage.accounts)} / ${formatCount(storage.requests)}` : '—'}
               hint='账号池规模与累计请求条数；清理入口在「数据」分区。'
             />
+            {/* 「检查更新」入口行（部署信息分区的末尾）：只检查不下载 —— 下载与安装的
+                完整入口在「更新」分区（那个面板归 update-panel.tsx，见文件头）。行内 anatomy
+                与上面的 DeployRow 同构：label 命名、hint 是说明文字，值一栏放动作按钮。 */}
+            <div className='retention-row'>
+              <label htmlFor='btn-deploy-check-update'>检查更新</label>
+              <span className='storage-line'>
+                <Button
+                  id='btn-deploy-check-update'
+                  variant='outline'
+                  disabled={checking}
+                  onClick={() => void checkUpdateNow()}
+                >
+                  {checking ? '检查中…' : '检查更新'}
+                </Button>
+              </span>
+              <div className='hint'>检查面板是否有新版本（读取 GitHub Releases）。</div>
+            </div>
           </div>
         </div>
       </section>
@@ -2353,10 +2444,12 @@ function applyShellPrefs(prefs: ShellPrefs): void {
  * 这里的每一项都要放下 2-3 句的中文说明（是什么 / 怎么生效 / 注意什么），
  * 塞进开关旁的行内文字放不下。
  */
-function PrefSwitchRow({ id, label, checked, hint, onChange }: {
+function PrefSwitchRow({ id, label, checked, disabled, hint, onChange }: {
   id: string
   label: string
   checked: boolean
+  /** 读不到后端值 / 提交在途时禁用（通知中心的告警路由用）；缺省 = 可拨 */
+  disabled?: boolean
   hint: string
   onChange: (next: boolean) => void
 }) {
@@ -2364,7 +2457,7 @@ function PrefSwitchRow({ id, label, checked, hint, onChange }: {
     <div className='retention-row'>
       <label htmlFor={id}>{label}</label>
       <span className='retention-input'>
-        <Switch id={id} checked={checked} onCheckedChange={onChange} />
+        <Switch id={id} checked={checked} disabled={disabled} onCheckedChange={onChange} />
       </span>
       <div className='hint'>{hint}</div>
     </div>
@@ -2969,6 +3062,542 @@ function ShellPane() {
   )
 }
 
+/* ─── 通知中心（通知渠道 / 告警事件路由 / 使用说明）────────── */
+
+/**
+ * 「通知中心」分类：渠道卡片列表 + 每类型专属动态表单 + 测试按钮 + 事件路由矩阵
+ * （形态对齐 Uptime-Kuma 的通知设置）。
+ *
+ * 数据走 /api/notify/* 的 fetch 直连（见 settings-model 的 notifyApi），状态与全部
+ * 写入流程在 settings-state（快照 notify 块）；本组件只持两类**草稿**：
+ *   · 添加 / 编辑表单的草稿（ChannelDraft）—— 保存动作是「算出整份新清单 → 全量 PUT」，
+ *     成功才收表单；
+ *   · 静默时段两个输入框的草稿 —— 失焦 / 回车成对提交，与数字框同一套节奏。
+ * 渠道卡片上「测试」的转圈是每张卡自己的本地状态（await 点名测试的那一下）。
+ */
+
+/** 添加 / 编辑表单的草稿：editing 区分「往清单里追加」与「替换清单里的同 id 项」 */
+type ChannelDraft = { editing: boolean; channel: NotifyChannel }
+
+/** 渠道卡片摘要：已知类型按字段表摆一行（密钥打码），未知类型退回原始键值 */
+function channelSummaryLine(channel: NotifyChannel): string {
+  if (notifyTypeSpec(channel.type)) return notifyChannelSummary(channel)
+  const entries = Object.entries(channel.config)
+  return entries.length
+    ? entries.map(([key, value]) => `${key}=${value}`).join(' · ')
+    : '（无配置项）'
+}
+
+/** 渠道面板的徽章与状态行 */
+function notifyChannelsBadge(notify: NotifyState): React.ReactNode {
+  if (notify.channelsStatus === 'ready') return <StatusBadge tone='ok'>已生效</StatusBadge>
+  if (notify.channelsStatus === 'unavailable') return <StatusBadge tone='bad'>不可用</StatusBadge>
+  return <StatusBadge tone='idle'>检测中…</StatusBadge>
+}
+
+function channelsStateText(notify: NotifyState): string {
+  if (notify.channelsStatus === 'loading') return STATES.appLoading
+  if (notify.channelsStatus === 'unavailable' || notify.channels === null) {
+    return STATES.notifyChannelsUnavailable
+  }
+  const enabled = notify.channels.filter(item => item.enabled).length
+  return `已配置 ${notify.channels.length} 个渠道，其中 ${enabled} 个启用。`
+}
+
+/** 一张渠道卡片：名称 + 类型徽章 + 摘要 + 启停开关 + 测试（转圈）/ 编辑 / 删除 */
+function ChannelCard({ channel, busy, onEdit, onDelete }: {
+  channel: NotifyChannel
+  busy: boolean
+  onEdit: () => void
+  onDelete: () => void
+}) {
+  const [testing, setTesting] = React.useState(false)
+
+  async function onTest(): Promise<void> {
+    if (testing) return
+    setTesting(true)
+    try { await testNotifyChannel(channel.id) } finally { setTesting(false) }
+  }
+
+  return (
+    <div className='flex items-start justify-between gap-3 rounded-md border border-hairline bg-surface-2 px-3 py-2.5'>
+      <div className='min-w-0 flex-1'>
+        <div className='flex flex-wrap items-center gap-2'>
+          <span className='text-[12.5px] font-medium text-foreground'>{channel.name}</span>
+          <Badge variant='outline' shape='tag'>{notifyTypeLabel(channel.type)}</Badge>
+          {!channel.enabled ? <Badge variant='ghost' shape='tag'>已停用</Badge> : null}
+        </div>
+        <div className='mt-1 break-all text-[12px] text-subtle'>{channelSummaryLine(channel)}</div>
+      </div>
+      <div className='flex shrink-0 items-center gap-2'>
+        {/* 启停开关：拨动即全量保存（随时可拨回，不需要确认框） */}
+        <label className='switch' title={channel.enabled ? '已启用（点击停用）' : '已停用（点击启用）'}>
+          <Switch
+            checked={channel.enabled}
+            disabled={busy}
+            onCheckedChange={next => void toggleNotifyChannel(channel.id, next)}
+          />
+        </label>
+        <Button variant='outline' size='sm' disabled={busy || testing} onClick={() => void onTest()}>
+          {testing ? <Spinner className='size-3.5' /> : null}
+          {testing ? '测试中…' : '测试'}
+        </Button>
+        <Button variant='outline' size='sm' disabled={busy} onClick={onEdit}>编辑</Button>
+        <Button variant='outline' size='sm' disabled={busy} onClick={onDelete}>删除</Button>
+      </div>
+    </div>
+  )
+}
+
+/** 表单里的一行输入（按字段表出 Input / Textarea，说明逐字段来自 NOTIFY_TYPES） */
+function ChannelFieldRow({ draft, field, onChange }: {
+  draft: NotifyChannel
+  field: { key: string; label: string; hint: string; placeholder?: string; multiline?: boolean; rows?: number }
+  onChange: (key: string, value: string) => void
+}) {
+  const id = `notify-channel-${draft.id}-${field.key}`
+  const value = draft.config[field.key] ?? ''
+  return (
+    <div className='retention-row'>
+      <label htmlFor={id}>{field.label}</label>
+      <span className='prompt-input'>
+        {field.multiline ? (
+          <Textarea
+            id={id}
+            rows={field.rows ?? 3}
+            placeholder={field.placeholder}
+            value={value}
+            onChange={event => onChange(field.key, event.target.value)}
+          />
+        ) : (
+          <Input
+            id={id}
+            type='text'
+            autoComplete='off'
+            placeholder={field.placeholder}
+            value={value}
+            onChange={event => onChange(field.key, event.target.value)}
+          />
+        )}
+      </span>
+      <div className='hint'>{field.hint}</div>
+    </div>
+  )
+}
+
+/** 静默时段：起止两个 HH:mm 输入框，草稿成对提交（失焦 / 回车），校验在流程层 */
+function QuietTimeRow({ alerts, locked, busy }: {
+  alerts: NonNullable<NotifyState['alerts']>
+  locked: boolean
+  busy: boolean
+}) {
+  const [draft, setDraft] = React.useState<{ start: string | null; end: string | null }>({
+    start: null,
+    end: null,
+  })
+  const start = draft.start !== null ? draft.start : alerts.quietStart
+  const end = draft.end !== null ? draft.end : alerts.quietEnd
+
+  async function commit(): Promise<void> {
+    if (draft.start === null && draft.end === null) return
+    const rawStart = start
+    const rawEnd = end
+    setDraft({ start: null, end: null }) // 先收草稿：失败时快照回滚会把输入框带回后端值
+    await saveNotifyQuiet(rawStart, rawEnd)
+  }
+
+  return (
+    <div className='retention-row'>
+      <label htmlFor='notify-quiet-start'>静默时段</label>
+      <span className='prompt-input flex items-center gap-2'>
+        <Input
+          id='notify-quiet-start'
+          type='text'
+          inputMode='numeric'
+          className='w-[110px] text-center tabular-nums'
+          placeholder='23:00'
+          value={start}
+          disabled={locked || busy}
+          onChange={event => setDraft(prev => ({ ...prev, start: event.target.value }))}
+          onBlur={() => void commit()}
+          onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
+        />
+        <span className='text-[12px] text-subtle'>至</span>
+        <Input
+          id='notify-quiet-end'
+          type='text'
+          inputMode='numeric'
+          className='w-[110px] text-center tabular-nums'
+          placeholder='07:00'
+          value={end}
+          disabled={locked || busy}
+          onChange={event => setDraft(prev => ({ ...prev, end: event.target.value }))}
+          onBlur={() => void commit()}
+          onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
+        />
+      </span>
+      <div className='hint'>{NOTES.notifyQuiet}</div>
+    </div>
+  )
+}
+
+/** 告警路由的徽章与状态行 */
+function notifyAlertsBadge(notify: NotifyState): React.ReactNode {
+  if (notify.alertsStatus === 'ready') return <StatusBadge tone='ok'>已生效</StatusBadge>
+  if (notify.alertsStatus === 'unavailable') return <StatusBadge tone='bad'>不可用</StatusBadge>
+  return <StatusBadge tone='idle'>检测中…</StatusBadge>
+}
+
+function alertsStateText(notify: NotifyState): string {
+  if (notify.alertsStatus === 'loading') return STATES.appLoading
+  if (notify.alertsStatus === 'unavailable' || notify.alerts === null) {
+    return STATES.notifyAlertsUnavailable
+  }
+  const alerts = notify.alerts
+  if (!alerts.enabled) return '外部推送已关闭：告警只写事件日志与顶栏铃铛，不推送到任何渠道。'
+  const on = [
+    alerts.events.onDegraded && '429 降级',
+    alerts.events.onOffline && '账号掉线',
+    alerts.events.onProbeDisabled && '探活自动禁用',
+  ].filter(Boolean).join('、')
+  const quiet = alerts.quietStart && alerts.quietEnd
+    ? `；静默时段 ${alerts.quietStart}–${alerts.quietEnd}（期内只记录不推送）`
+    : ''
+  return `外部推送已开启：${on || '（未选中任何事件类）'}${quiet}。`
+}
+
+/**
+ * 「通知中心」分类的三个面板：通知渠道 / 告警事件路由 / 使用说明。
+ */
+function NotifyPane({ snap }: { snap: SettingsSnapshot }) {
+  const notify = snap.notify
+  const savingChannels = snap.busy === 'notify'
+  const alertsBusy = snap.busy === 'notifyAlerts'
+  const locked = notify.channelsStatus !== 'ready'
+  const channels = notify.channels ?? []
+  const alerts = notify.alerts
+  const alertsLocked = notify.alertsStatus !== 'ready'
+  const [draft, setDraft] = React.useState<ChannelDraft | null>(null)
+  const [testingAll, setTestingAll] = React.useState(false)
+
+  function startAdd(): void {
+    const first = NOTIFY_TYPES[0]
+    setDraft({
+      editing: false,
+      channel: {
+        id: newNotifyChannelId(),
+        name: '',
+        type: first.type,
+        enabled: true,
+        config: emptyNotifyConfig(first.type),
+      },
+    })
+  }
+
+  function startEdit(channel: NotifyChannel): void {
+    setDraft({ editing: true, channel: { ...channel, config: { ...channel.config } } })
+  }
+
+  /** 表单保存：先本地校验（提示短、省一次往返），通过才算整份新清单走全量保存 */
+  async function saveDraft(): Promise<void> {
+    if (!draft) return
+    const error = validateNotifyChannel(draft.channel)
+    if (error) { toast(error, 'err'); return }
+    const list = notify.channels ?? []
+    const next = draft.editing
+      ? list.map(item => (item.id === draft.channel.id ? draft.channel : item))
+      : [...list, draft.channel]
+    const ok = await saveNotifyChannels(
+      next,
+      draft.editing ? `✅ 渠道「${draft.channel.name}」已更新` : `✅ 渠道「${draft.channel.name}」已添加`,
+    )
+    if (ok) setDraft(null)
+  }
+
+  async function deleteChannel(channel: NotifyChannel): Promise<void> {
+    if (!(await dataAsk(
+      '删除通知渠道',
+      `将删除渠道「${channel.name}」（${notifyTypeLabel(channel.type)}）。\n配置删除后不可恢复，需要时请重新添加。`,
+      '确认删除',
+    ))) return
+    await removeNotifyChannel(channel.id)
+  }
+
+  async function testAll(): Promise<void> {
+    if (testingAll) return
+    setTestingAll(true)
+    try { await testNotifyChannel() } finally { setTestingAll(false) }
+  }
+
+  const draftSpec = draft ? notifyTypeSpec(draft.channel.type) : null
+  const draftTypeDesc = draft ? notifyTypeSpec(draft.channel.type)?.desc : ''
+
+  return (
+    <>
+      {/* ── 面板一：通知渠道 ── */}
+      <section className='panel'>
+        <PanelHead
+          title='通知渠道'
+          tip={TIPS.notifyChannels}
+          badge={notifyChannelsBadge(notify)}
+          actions={
+            <>
+              <Button
+                id='btn-notify-test-all'
+                variant='outline'
+                disabled={locked || savingChannels || testingAll}
+                onClick={() => void testAll()}
+              >
+                {testingAll ? <Spinner className='size-3.5' /> : null}
+                {testingAll ? '发送中…' : '测试全部启用渠道'}
+              </Button>
+              <Button
+                id='btn-notify-add-channel'
+                variant='default'
+                disabled={locked || savingChannels}
+                onClick={startAdd}
+              >
+                添加渠道
+              </Button>
+              <RefreshButton id='btn-notify-refresh' onClick={() => void refreshNotify()} />
+            </>
+          }
+        />
+        <div className='panel-body'>
+          {/* 渠道卡片列表（Uptime-Kuma 形态）；读不到时整块禁用 */}
+          {channels.length === 0 ? (
+            <div className='hint'>
+              还没有渠道。点右上角「添加渠道」配置第一个推送出口（支持 {NOTIFY_TYPES.length} 种服务，
+              每种要填什么见表单里逐字段的中文说明；同一类型可以配多条）。
+            </div>
+          ) : (
+            <div className='flex flex-col gap-2'>
+              {channels.map(channel => (
+                <ChannelCard
+                  key={channel.id}
+                  channel={channel}
+                  busy={savingChannels}
+                  onEdit={() => startEdit(channel)}
+                  onDelete={() => void deleteChannel(channel)}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* 添加 / 编辑表单：按类型动态出字段（类型在编辑时锁定 —— 换类型等于换一套
+              凭据，改用「删除重加」语义更清楚） */}
+          {draft ? (
+            <div className='mt-3 rounded-md border border-hairline bg-surface-2 p-3'>
+              <div className='mb-2 flex flex-wrap items-center justify-between gap-2'>
+                <strong className='text-[13px] text-foreground'>
+                  {draft.editing ? `编辑渠道：${draft.channel.name || draft.channel.id}` : '添加渠道'}
+                </strong>
+                <Badge variant='brand' shape='tag'>{notifyTypeLabel(draft.channel.type)}</Badge>
+              </div>
+              <div className='retention-list'>
+                <div className='retention-row'>
+                  <label htmlFor='notify-channel-name'>渠道名称</label>
+                  <span className='prompt-input'>
+                    <Input
+                      id='notify-channel-name'
+                      type='text'
+                      autoComplete='off'
+                      placeholder='如：运维群钉钉机器人'
+                      value={draft.channel.name}
+                      onChange={event => setDraft({
+                        ...draft,
+                        channel: { ...draft.channel, name: event.target.value },
+                      })}
+                    />
+                  </span>
+                  <div className='hint'>
+                    只显示在面板里（卡片、测试与告警文案都用它），随便起；同一类型配多条时靠名字区分。
+                  </div>
+                </div>
+                <div className='retention-row'>
+                  <label htmlFor='notify-channel-type'>渠道类型</label>
+                  <span className='prompt-input'>
+                    <Select
+                      value={draft.channel.type}
+                      disabled={draft.editing}
+                      onValueChange={next => {
+                        if (next == null) return
+                        const type = String(next)
+                        if (!type || type === draft.channel.type) return
+                        // 换类型 = 换一套凭据：config 按新类型的字段表重置（Bark 的默认地址等一并补上）
+                        setDraft({ ...draft, channel: { ...draft.channel, type, config: emptyNotifyConfig(type) } })
+                      }}
+                    >
+                      <SelectTrigger id='notify-channel-type' className='w-[220px]' aria-label='渠道类型'>
+                        <SelectValue>{notifyTypeLabel(draft.channel.type)}</SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {NOTIFY_TYPES.map(spec => (
+                          <SelectItem key={spec.type} value={spec.type}>{spec.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </span>
+                  <div className='hint'>
+                    {draft.editing
+                      ? '编辑时类型不可改：要换类型请删除后重新添加（凭据是跟着类型走的）。'
+                      : draftTypeDesc}
+                  </div>
+                </div>
+                {draftSpec
+                  ? draftSpec.fields.map(field => (
+                    <ChannelFieldRow
+                      key={field.key}
+                      draft={draft.channel}
+                      field={field}
+                      onChange={(key, value) => setDraft({
+                        ...draft,
+                        channel: { ...draft.channel, config: { ...draft.channel.config, [key]: value } },
+                      })}
+                    />
+                  ))
+                  : /* 未知类型（后端新加、前端没跟）：按原始键值兜底，能看能存 */
+                  Object.entries(draft.channel.config).map(([key, value]) => (
+                    <ChannelFieldRow
+                      key={key}
+                      draft={draft.channel}
+                      field={{
+                        key,
+                        label: key,
+                        hint: `未识别的类型「${draft.channel.type}」的配置项，按原样保存。`,
+                      }}
+                      onChange={(changed, next) => setDraft({
+                        ...draft,
+                        channel: { ...draft.channel, config: { ...draft.channel.config, [changed]: next } },
+                      })}
+                    />
+                  ))}
+              </div>
+              <div className='mt-2.5 flex gap-2.5'>
+                <Button
+                  id='btn-notify-save-channel'
+                  variant='default'
+                  disabled={savingChannels}
+                  onClick={() => void saveDraft()}
+                >
+                  {savingChannels ? '保存中…' : '保存渠道'}
+                </Button>
+                <Button variant='outline' disabled={savingChannels} onClick={() => setDraft(null)}>
+                  取消
+                </Button>
+              </div>
+              <div className='hint'>{NOTES.notifyChannels}</div>
+            </div>
+          ) : null}
+
+          <div className='settings-state'>{channelsStateText(notify)}</div>
+        </div>
+      </section>
+
+      {/* ── 面板二：告警事件路由 ── */}
+      <section className='panel'>
+        <PanelHead
+          title='告警事件路由'
+          tip={TIPS.notifyAlerts}
+          badge={notifyAlertsBadge(notify)}
+          actions={<RefreshButton id='btn-notify-alerts-refresh' onClick={() => void refreshNotify()} />}
+        />
+        <div className='panel-body'>
+          <div className='retention-list'>
+            <PrefSwitchRow
+              id='notify-alerts-enabled'
+              label='外部推送总开关'
+              checked={alerts?.enabled ?? false}
+              disabled={alertsLocked || alertsBusy}
+              hint='总闸：关闭后任何告警事件都不再推送到任何渠道（事件日志与顶栏铃铛照常记录）。开启后由下面三路事件开关逐类决定推哪些。'
+              onChange={next => void saveNotifyAlerts(
+                { enabled: next },
+                next ? '✅ 外部推送已开启' : '已关闭外部推送（事件仍记录在日志与铃铛）',
+              )}
+            />
+            <PrefSwitchRow
+              id='notify-alerts-degraded'
+              label='429 降级'
+              checked={alerts?.events.onDegraded ?? false}
+              disabled={alertsLocked || alertsBusy}
+              hint='触发时机：账号撞上上游限流（HTTP 429）、被冷却降级并自动换号时推送 —— 收到它说明有账号在限流，转发仍在继续（已换号顶上），但可用容量在下降。'
+              onChange={next => void saveNotifyAlerts({ events: { onDegraded: next } }, next ? '✅ 已开启：429 降级推送' : '已关闭：429 降级推送')}
+            />
+            <PrefSwitchRow
+              id='notify-alerts-offline'
+              label='账号掉线'
+              checked={alerts?.events.onOffline ?? false}
+              disabled={alertsLocked || alertsBusy}
+              hint='触发时机：账号登录态失效、凭证刷新失败或连续转发失败被判不可用时推送 —— 收到它说明可用账号少了一个，通常需要人工重新登录处理。'
+              onChange={next => void saveNotifyAlerts({ events: { onOffline: next } }, next ? '✅ 已开启：账号掉线推送' : '已关闭：账号掉线推送')}
+            />
+            <PrefSwitchRow
+              id='notify-alerts-probe'
+              label='探活自动禁用'
+              checked={alerts?.events.onProbeDisabled ?? false}
+              disabled={alertsLocked || alertsBusy}
+              hint='触发时机：定时探活对同一账号连续失败达到阈值、账号被自动停用时推送 —— 收到它说明账号已被系统停用，恢复后需手动重新启用。'
+              onChange={next => void saveNotifyAlerts({ events: { onProbeDisabled: next } }, next ? '✅ 已开启：探活自动禁用推送' : '已关闭：探活自动禁用推送')}
+            />
+            {alerts ? (
+              <QuietTimeRow alerts={alerts} locked={alertsLocked} busy={alertsBusy} />
+            ) : null}
+          </div>
+          <div className='settings-state'>{alertsStateText(notify)}</div>
+          <div className='hint retention-note'>{NOTES.notifyQuiet}</div>
+        </div>
+      </section>
+
+      {/* ── 面板三：使用说明 ── */}
+      <section className='panel'>
+        <PanelHead title='使用说明' />
+        <div className='panel-body'>
+          <div className='retention-list'>
+            <div className='retention-row'>
+              <label>支持渠道</label>
+              <span className='storage-line'>
+                <span className='storage-path'>{NOTIFY_TYPES.map(spec => spec.label).join('、')}</span>
+              </span>
+              <div className='hint'>
+                共 {NOTIFY_TYPES.length} 种；同一类型可以配多条（比如两个不同的钉钉群），每条独立启用、独立测试。
+                各类型要填什么、到哪里拿凭据，见添加表单里逐字段的中文说明。
+              </div>
+            </div>
+            <div className='retention-row'>
+              <label>测试方法</label>
+              <span className='storage-line'>
+                <span className='storage-path'>渠道卡片「测试」 / 「测试全部启用渠道」</span>
+              </span>
+              <div className='hint'>
+                测试用与真实告警完全相同的通道发一条测试消息，收到即配置正确；失败时错误信息会指明原因
+                （常见：Token 抄错、机器人没和目标聊天说过话、URL 抄漏路径）。每次改完配置建议立即测一次。
+              </div>
+            </div>
+            <div className='retention-row'>
+              <label>与铃铛的关系</label>
+              <span className='storage-line'>
+                <span className='storage-path'>铃铛 = 站内事件流 · 渠道 = 站外推送</span>
+              </span>
+              <div className='hint'>{NOTES.notifyBell}</div>
+            </div>
+            <div className='retention-row'>
+              <label>告警触发时机</label>
+              <span className='storage-line'>
+                <span className='storage-path'>429 降级 · 账号掉线 · 探活自动禁用</span>
+              </span>
+              <div className='hint'>
+                三类事件的详细触发时机见上面「告警事件路由」各开关的说明。事件永远会写入事件日志并出现在
+                顶栏铃铛；这里的开关只决定**要不要推送到渠道**，静默时段只影响推送、不影响记录。
+              </div>
+            </div>
+          </div>
+          <div className='hint retention-note'>{NOTES.notifyChannels}</div>
+        </div>
+      </section>
+    </>
+  )
+}
+
 /* ─── 页面 ─────────────────────────────────── */
 
 function SettingsPage() {
@@ -3028,6 +3657,9 @@ function SettingsPage() {
         </div>
         <div className={paneClass('data')} data-cat='data'>
           <DataPane snap={snap} />
+        </div>
+        <div className={paneClass('notify')} data-cat='notify'>
+          <NotifyPane snap={snap} />
         </div>
         <div className={paneClass('prefs')} data-cat='prefs'>
           <PrefsPane />

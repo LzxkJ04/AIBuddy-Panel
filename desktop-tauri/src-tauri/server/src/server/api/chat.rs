@@ -50,6 +50,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{json, Value};
 
 use crate::server::config;
+use crate::server::core::key_quota;
 use crate::server::core::upstream::cancellation;
 use crate::server::core::upstream::usage::RequestTelemetry;
 use crate::server::core::upstream::{ForwardOutcome, ForwardRequest};
@@ -79,6 +80,18 @@ pub async fn chat_completions(
     let scope = key_scope.map(|Extension(scope)| scope);
     // 请求开始时刻（请求统计用）。放在最前面：它要覆盖 body 解析与选路的耗时
     let started_at = logging::now_ms();
+    // ⓪ Key 额度 / 有效期准入（`core::key_quota`）：过期 → 403「Key 已过期」，
+    // Token 配额用尽 → 403「Key 配额已用尽」。没有命中的 Key（免鉴权 / 环境变量
+    // Key / 未知 Key）一律放行 —— 与白名单同一语义。放在 body 解析**之前**：
+    // 被拒的请求连解析都不必做，更不该碰上游。
+    if let Err(message) = key_quota::check_scope(scope.as_ref()) {
+        let error = GatewayError::with_status(403, message);
+        record_early_failure(&state, started_at, "", "", &error);
+        return error.payload_response();
+    }
+    // 记账键在 scope 被 move 进转发层之前抄好（随 RecordContext 带到收尾，
+    // 见 `key_quota::key_id_of` 与 `RecordContext::key_id` 的说明）
+    let key_id = key_quota::key_id_of(scope.as_ref());
     // ① body 必须是 JSON 对象（数组/标量/null 都算非法）
     let parsed = serde_json::from_slice::<Value>(&body).ok();
     let Some(mut payload) = parsed.filter(Value::is_object) else {
@@ -217,6 +230,7 @@ pub async fn chat_completions(
                 // 请求侧正文已抄好；响应侧由 RecordingStream 在流结束时定稿
                 raw_request,
                 raw_response: None,
+                key_id: key_id.clone(),
             };
             // 收尾帧特征取 Chat 的：客户端读到 `data: [DONE]` 就停是常态写法，
             // 那时连接会被立刻关掉、`Drop` 不会被拉到 EOF（见 `RecordingStream`）
@@ -248,6 +262,7 @@ pub async fn chat_completions(
                     status: 200,
                     raw_request,
                     raw_response,
+                    key_id: key_id.clone(),
                 },
                 None,
             );
@@ -277,6 +292,8 @@ pub async fn chat_completions(
                     // 响应体由网关自己生成（error 摘要已在明细里），不另存
                     raw_request,
                     raw_response: None,
+                    // 最后一个使用点：直接 move，不再 clone
+                    key_id,
                 },
                 Some(message),
             );

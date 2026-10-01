@@ -235,6 +235,12 @@ export async function openExternal(url: string): Promise<void> {
  * aibuddy-prefs / aibuddy-tags / aibuddy-notify-read 等），与后端配置无关，所以排在
  * 「数据」之后、「部署信息」之前 —— 后端类的分类看完，再看本机观感类的收尾。
  * 图标沿用 icons.js 里现成的描边图标（sliders 与「通用」同款、feedback 与「反馈」同款）。
+ *
+ * 「通知中心」（notify）是**后端配置类**分类（通知渠道与告警事件路由都存在网关配置里，
+ * 与「通知与页签」那栏的本机偏好不是一回事），所以插在「数据」之后、「偏好与外观」之前
+ * —— 任务要求它排在「通知与页签」之前，而它管的又是后端的事，紧跟后端类的「数据」
+ * 最顺；图标取 'bell'（icons.js 的设置页分类组目前还没有这个键，视图层有一枚
+ * 同源描边兜底，见 settings-page 的 categoryIconHtml）。
  */
 export const CATEGORIES = [
   { id: 'general', label: '通用', icon: 'sliders' },
@@ -245,6 +251,7 @@ export const CATEGORIES = [
   { id: 'timeout', label: '超时', icon: 'timer' },
   { id: 'security', label: '安全', icon: 'shield' },
   { id: 'data', label: '数据', icon: 'database' },
+  { id: 'notify', label: '通知中心', icon: 'bell' },
   { id: 'prefs', label: '偏好与外观', icon: 'sliders' },
   { id: 'shell', label: '通知与页签', icon: 'feedback' },
   { id: 'deploy', label: '部署信息', icon: 'pulse' },
@@ -465,7 +472,565 @@ export const SHELL_TAG_LABELS: Record<string, string> = {
   settings: '设置',
 }
 
-/* ─── 数字字段表 ───────────────────────────── */
+/* ─── 通知渠道与告警路由（「通知中心」分类） ─── */
+
+/**
+ * 单个通知渠道（`GET /api/notify/channels` 的 channels 项）。
+ *
+ * `config` 的键名按渠道类型各有一套（见 NOTIFY_TYPES 的字段表），值统一按字符串
+ * 处理 —— 后端存的是字符串表，界面也不再自作聪明转数字（多一处转换就多一处漂）。
+ */
+export type NotifyChannel = {
+  /** 渠道 id：测试接口按它点名渠道；新建时由界面生成（后端全量保存不补 id） */
+  id: string
+  name: string
+  type: string
+  enabled: boolean
+  config: Record<string, string>
+}
+
+/** 告警事件路由（`GET /api/notify/alerts` 的 data） */
+export type NotifyAlerts = {
+  /** 总开关：关闭后任何事件都不做外部推送（事件照常写事件日志） */
+  enabled: boolean
+  events: {
+    /** 429 降级告警：账号触发上游 429、被降级并换号时 */
+    onDegraded: boolean
+    /** 账号掉线与失败告警：登录态失效 / 凭证刷新失败 / 连续转发失败时 */
+    onOffline: boolean
+    /** 探活自动禁用告警：定时探活连败达到阈值、账号被自动停用时 */
+    onProbeDisabled: boolean
+  }
+  /** 静默时段起止（HH:mm，本地时区；两端都空 = 不启用静默） */
+  quietStart: string
+  quietEnd: string
+}
+
+/**
+ * 通知接口的直连出口（`/api/notify/*`）。
+ *
+ * 设置页的其它数据都走 window.workbuddyDesktop 桥（bridge.rs / web_shim.rs 各实现
+ * 一份）；通知这组端点两份桥都还没有（后端刚起），而桌面端与网页端的面板**都是同源
+ * HTTP**（桌面端的网关跑在应用进程内、面板由它伺服），fetch 直连在两种形态下都能用
+ * —— 与「部署信息」分区 checkUpdateNow 打 /api/update/check 是同一模式。
+ *
+ * 响应按网关的 `{success, data}` 信封拆包（与 web_shim 的 httpCall 同一口径）：
+ * 非 2xx 或 `success === false` 抛 Error（文案取 error / message / msg）；
+ * 有 `data` 键取 `data`，否则原样返回（PUT 契约写的是裸 `{channels:[…]}`，两种都接）。
+ * 401 的静默续期 / Key 兜底不在本函数里 —— 那是桥的职责，直连绕过了它；会话过期时
+ * 这里只会如实报错，用户重新登录后一切恢复。
+ */
+export async function notifyApi<T = unknown>(
+  method: 'GET' | 'PUT' | 'POST',
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const init: RequestInit = { method, headers: { Accept: 'application/json' } }
+  if (method !== 'GET') {
+    init.headers = { ...init.headers, 'Content-Type': 'application/json' }
+    init.body = JSON.stringify(body ?? {})
+  }
+  const response = await fetch(path, init)
+  const text = await response.text()
+  let payload: unknown = null
+  try { payload = text ? JSON.parse(text) : null } catch { /* 非 JSON：按原文报错 */ }
+  const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null
+  const success = typeof record?.success === 'boolean' ? record.success : undefined
+  if (!response.ok || success === false) {
+    const detail = record
+      ? (record.error ?? record.message ?? record.msg ?? `HTTP ${response.status}`)
+      : (text.trim() || `HTTP ${response.status}`)
+    const message = typeof detail === 'string'
+      ? detail
+      : detail && typeof detail === 'object' && typeof (detail as Record<string, unknown>).message === 'string'
+        ? String((detail as Record<string, unknown>).message)
+        : JSON.stringify(detail)
+    throw new Error(message)
+  }
+  return (record && Object.prototype.hasOwnProperty.call(record, 'data') ? record.data : payload) as T
+}
+
+/** 渠道类型字段表里的一项 */
+export type NotifyFieldSpec = {
+  /** config 的键名（与后端逐字一致） */
+  key: string
+  label: string
+  /** 字段说明（表单里渲染在输入框下方） */
+  hint: string
+  placeholder?: string
+  /** 密钥类字段：卡片摘要与测试文案里打码，不回显全文 */
+  secret?: boolean
+  /** 多行文本（自定义模板 / 请求头 JSON） */
+  multiline?: boolean
+  rows?: number
+  /** 必填（false = 选填，如钉钉加签密钥、自定义 Webhook 的请求头） */
+  required?: boolean
+  /** 新建渠道时该字段的初始值（如 Bark 的官方地址） */
+  initial?: string
+}
+
+/** 渠道类型注册表里的一项 */
+export type NotifyTypeSpec = {
+  /** type 值（与后端逐字一致） */
+  type: string
+  /** 中文名（下拉、类型徽章用） */
+  label: string
+  /** 一句话说明（下拉项下方、卡片摘要兜底） */
+  desc: string
+  fields: NotifyFieldSpec[]
+}
+
+/**
+ * 16 种渠道类型与各自的 config 字段表。
+ *
+ * 键名与后端的渠道配置逐字对齐（webhook 的 url、telegram 的 botToken / chatId …）；
+ * 说明文案按「是什么 / 到哪里拿 / 填什么形态」写，新用户不看文档也能填对。
+ * 顺序 = 添加渠道下拉里的顺序：通用 Webhook 在前，IM 机器人居中，专用推送服务殿后。
+ */
+export const NOTIFY_TYPES: NotifyTypeSpec[] = [
+  {
+    type: 'webhook',
+    label: 'Webhook',
+    desc: '通用 Webhook：以 POST 方式向该地址发送 JSON 告警（含 title / body 字段）。',
+    fields: [
+      {
+        key: 'url',
+        label: '接收地址 URL',
+        hint: '接收 POST 请求的完整地址（http:// 或 https://）。网关会把告警装成 JSON（含 title、body、时间与事件类型）整体发过去，适合自建接收端或 n8n、Huginn 等自动化平台。',
+        placeholder: 'https://example.com/hook',
+        required: true,
+      },
+    ],
+  },
+  {
+    type: 'webhook-custom',
+    label: '自定义 Webhook',
+    desc: '自定义报文模板与请求头的 Webhook：报文长什么样由模板决定。',
+    fields: [
+      {
+        key: 'url',
+        label: '接收地址 URL',
+        hint: '接收 POST 请求的完整地址（http:// 或 https://）。',
+        placeholder: 'https://example.com/hook',
+        required: true,
+      },
+      {
+        key: 'template',
+        label: '报文模板',
+        hint: 'POST 的正文按这个模板渲染：{{title}} 替换为告警标题、{{body}} 替换为正文。留空则发送默认 JSON（{title, body}）。需要发到只认固定格式的平台（如企业应用的自定义机器人）时用它。',
+        placeholder: '{"msgtype":"text","text":{"content":"{{title}}\\n{{body}}"}}',
+        multiline: true,
+        rows: 5,
+      },
+      {
+        key: 'headers',
+        label: '自定义请求头（JSON）',
+        hint: '随请求一并发送的 HTTP 头，写成一个 JSON 对象，如 {"Content-Type":"application/json","X-Token":"abc"}。留空则只带默认的 Content-Type。',
+        placeholder: '{"Content-Type":"application/json"}',
+        multiline: true,
+        rows: 3,
+      },
+    ],
+  },
+  {
+    type: 'telegram',
+    label: 'Telegram',
+    desc: 'Telegram Bot 推送：把告警发到指定聊天（私聊或群组）。',
+    fields: [
+      {
+        key: 'botToken',
+        label: 'Bot Token',
+        hint: '找 @BotFather 创建机器人后获取（形如 123456:ABC-DEF…）。机器人要先与目标聊天下过一句话（私聊发 /start、群里把它拉进来发条消息），否则发不出去。',
+        placeholder: '123456789:AAF…',
+        secret: true,
+        required: true,
+      },
+      {
+        key: 'chatId',
+        label: 'Chat ID',
+        hint: '接收消息的聊天 ID：私聊是一个正整数，群组是负数（-100 开头常见）。可向 @userinfobot 或 @getidsbot 查询；把机器人拉进群后它也能从 getUpdates 里看到。',
+        placeholder: '-1001234567890',
+        required: true,
+      },
+    ],
+  },
+  {
+    type: 'discord',
+    label: 'Discord',
+    desc: 'Discord 频道 Webhook：告警直接进指定频道的消息流。',
+    fields: [
+      {
+        key: 'url',
+        label: 'Webhook URL',
+        hint: 'Discord 频道的 Webhook 地址：服务器设置 → 整合 → Webhook → 新建（或复用现有的），复制完整 URL（https://discord.com/api/webhooks/…）。',
+        placeholder: 'https://discord.com/api/webhooks/…',
+        required: true,
+      },
+    ],
+  },
+  {
+    type: 'slack',
+    label: 'Slack',
+    desc: 'Slack Incoming Webhook：告警作为消息发进指定频道。',
+    fields: [
+      {
+        key: 'url',
+        label: 'Webhook URL',
+        hint: 'Slack 的 Incoming Webhook 地址（https://hooks.slack.com/services/…）：在 Slack App 设置里启用 Incoming Webhooks、为目标频道添加一条后复制。旧版 Legacy 网址同样可用。',
+        placeholder: 'https://hooks.slack.com/services/…',
+        required: true,
+      },
+    ],
+  },
+  {
+    type: 'dingtalk',
+    label: '钉钉机器人',
+    desc: '钉钉群自定义机器人 Webhook，支持「加签」安全设置。',
+    fields: [
+      {
+        key: 'url',
+        label: 'Webhook URL',
+        hint: '钉钉群设置 → 群机器人 → 添加「自定义」机器人后拿到的完整 Webhook 地址（https://oapi.dingtalk.com/robot/send?access_token=…）。安全设置建议选「加签」。',
+        placeholder: 'https://oapi.dingtalk.com/robot/send?access_token=…',
+        required: true,
+      },
+      {
+        key: 'secret',
+        label: '加签密钥（选填）',
+        hint: '机器人安全设置选「加签」时的密钥（SEC 开头）。填写后网关自动按 HmacSHA256 + base64 计算时间戳签名并附在请求上，不需要手动拼接；安全设置选「自定义关键词」的可以留空（告警标题里含「告警」关键词可命中）。',
+        placeholder: 'SEC…',
+        secret: true,
+      },
+    ],
+  },
+  {
+    type: 'feishu',
+    label: '飞书机器人',
+    desc: '飞书群自定义机器人 Webhook。',
+    fields: [
+      {
+        key: 'url',
+        label: 'Webhook URL',
+        hint: '飞书群设置 → 群机器人 → 添加「自定义机器人」后拿到的完整地址（https://open.feishu.cn/open-apis/bot/v2/hook/…）。若开启了签名校验，地址与签名密钥一并算在网关的加签逻辑内。',
+        placeholder: 'https://open.feishu.cn/open-apis/bot/v2/hook/…',
+        required: true,
+      },
+    ],
+  },
+  {
+    type: 'wecom',
+    label: '企业微信机器人',
+    desc: '企业微信群机器人 Webhook。',
+    fields: [
+      {
+        key: 'url',
+        label: 'Webhook URL',
+        hint: '企业微信群的「群机器人」拿到的完整地址（https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…），key 保持在地址里整段抄下来。',
+        placeholder: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…',
+        required: true,
+      },
+    ],
+  },
+  {
+    type: 'bark',
+    label: 'Bark',
+    desc: 'iOS 推送 App Bark：告警作为系统通知直达 iPhone。',
+    fields: [
+      {
+        key: 'url',
+        label: 'Bark 服务地址',
+        hint: 'Bark 服务端地址：用官方服务保持默认 https://api.day.app 即可；自建 Bark Server 的填自己的地址。',
+        placeholder: 'https://api.day.app',
+        initial: 'https://api.day.app',
+        required: true,
+      },
+      {
+        key: 'key',
+        label: '推送 Key',
+        hint: 'Bark App 首页显示的设备推送 Key（一串字母数字）。App 里可以复制完整的推送 URL，其中路径段就是 Key。',
+        placeholder: 'QH7yFeZ…',
+        secret: true,
+        required: true,
+      },
+    ],
+  },
+  {
+    type: 'gotify',
+    label: 'Gotify',
+    desc: '自托管消息服务 Gotify：推送到指定应用的消息通道。',
+    fields: [
+      {
+        key: 'url',
+        label: 'Gotify 服务地址',
+        hint: '自建 Gotify 的根地址（http:// 或 https://），如 https://push.example.com。',
+        placeholder: 'https://push.example.com',
+        required: true,
+      },
+      {
+        key: 'token',
+        label: 'Application Token',
+        hint: 'Gotify 网页端 → Apps → 创建应用后拿到的 Application Token（以 A 开头的一串；不是客户端的 User Token，别抄错）。',
+        placeholder: 'Axxxxxxxxxx',
+        secret: true,
+        required: true,
+      },
+    ],
+  },
+  {
+    type: 'pushover',
+    label: 'Pushover',
+    desc: 'Pushover 移动推送（付费 App，到达率高）。',
+    fields: [
+      {
+        key: 'token',
+        label: 'API Token',
+        hint: 'Pushover 上创建 Application 后的 API Token（30 个字母），用于标识来源应用。',
+        placeholder: 'azGDO…',
+        secret: true,
+        required: true,
+      },
+      {
+        key: 'user',
+        label: 'User Key',
+        hint: 'Pushover 个人主页上的 User Key（同样 30 个字母），标识推给谁；多设备同账号共用一个。',
+        placeholder: 'uQiRz…',
+        secret: true,
+        required: true,
+      },
+    ],
+  },
+  {
+    type: 'pushbullet',
+    label: 'Pushbullet',
+    desc: 'Pushbullet 推送（跨设备通知同步）。',
+    fields: [
+      {
+        key: 'token',
+        label: 'Access Token',
+        hint: 'Pushbullet 账号设置 → Access Tokens 里创建的令牌，整段抄下来（只需这一项）。',
+        placeholder: 'o.xxxxxxxxxxxx',
+        secret: true,
+        required: true,
+      },
+    ],
+  },
+  {
+    type: 'ntfy',
+    label: 'ntfy',
+    desc: 'ntfy 主题推送：手机装 ntfy App 订阅同一主题即可收告警。',
+    fields: [
+      {
+        key: 'url',
+        label: '服务地址（含主题）',
+        hint: 'ntfy 的发布地址，必须**带主题（topic）路径**：官方服务写 https://ntfy.sh/主题名（主题名建议起得足够独特，公网谁都能订阅）；自建 ntfy 写自己的地址 + 主题。手机 App 里订阅同一个主题名即可收到。',
+        placeholder: 'https://ntfy.sh/my-aibuddy-alerts',
+        required: true,
+      },
+    ],
+  },
+  {
+    type: 'teams',
+    label: 'Teams',
+    desc: 'Microsoft Teams 频道 Incoming Webhook。',
+    fields: [
+      {
+        key: 'url',
+        label: 'Webhook URL',
+        hint: 'Teams 频道 → 「工作流」/「连接器」添加「Incoming Webhook」后拿到的完整地址（https://outlook.office.com/webhook/… 或 …/incomingwebhook/…）。',
+        placeholder: 'https://xxx.office.com/webhook/…',
+        required: true,
+      },
+    ],
+  },
+  {
+    type: 'serverchan',
+    label: 'Server酱',
+    desc: 'Server酱：告警推送到微信（服务号消息）。',
+    fields: [
+      {
+        key: 'key',
+        label: 'SendKey',
+        hint: '在 Server酱官网（sct.ftqq.com）微信扫码登录后得到的 SendKey（SCT 开头的一串）；免费额度每天有条数上限，告警频繁时留意。',
+        placeholder: 'SCTxxxxxxxxxx',
+        secret: true,
+        required: true,
+      },
+    ],
+  },
+  {
+    type: 'line',
+    label: 'LINE',
+    desc: 'LINE Messaging API 推送。',
+    fields: [
+      {
+        key: 'token',
+        label: 'Channel Access Token',
+        hint: 'LINE Developers 控制台里 Messaging API 频道的长时效 Channel Access Token（issue 后整段复制）；同时要记下接收消息的用户 / 群组 ID 并让对方加机器人好友。',
+        placeholder: 'eyJhbGciOi…',
+        secret: true,
+        required: true,
+      },
+    ],
+  },
+]
+
+/** 按类型查注册表（未知类型给 null —— 后端加了新类型而前端没跟时，界面仍能如实显示 type 值） */
+export function notifyTypeSpec(type: string): NotifyTypeSpec | null {
+  return NOTIFY_TYPES.find(item => item.type === type) || null
+}
+
+/** 渠道类型的展示名（未知类型原样回显 type 值） */
+export function notifyTypeLabel(type: string): string {
+  return notifyTypeSpec(type)?.label || type
+}
+
+/** 新建渠道时的初始 config：按类型字段表补 initial 值，其余留空 */
+export function emptyNotifyConfig(type: string): Record<string, string> {
+  const config: Record<string, string> = {}
+  for (const field of notifyTypeSpec(type)?.fields || []) {
+    config[field.key] = field.initial ? String(field.initial) : ''
+  }
+  return config
+}
+
+/** 新渠道 id 的本地生成（后端全量保存不补 id，测试接口要靠它点名渠道） */
+export function newNotifyChannelId(): string {
+  return `nch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/**
+ * 渠道清单归一化：只认「形状对的项」（id / name / type 都是字符串、enabled 按布尔），
+ * 认不出的丢弃 —— 宁可少显示一个渠道，也不把 undefined 渲染到卡片上。
+ * 返回 null 表示整块不可用（响应形状不对，调用方据此打「不可用」徽章）。
+ */
+export function normalizeNotifyChannels(raw: unknown): NotifyChannel[] | null {
+  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
+  const list = Array.isArray(raw)
+    ? raw
+    : Array.isArray(record?.channels)
+      ? record.channels
+      : null
+  if (list === null) return null
+  const channels: NotifyChannel[] = []
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue
+    const entry = item as Record<string, unknown>
+    const id = String(entry.id ?? '').trim()
+    const type = String(entry.type ?? '').trim()
+    if (!id || !type) continue
+    const config: Record<string, string> = {}
+    if (entry.config && typeof entry.config === 'object') {
+      for (const [key, value] of Object.entries(entry.config as Record<string, unknown>)) {
+        if (value !== undefined && value !== null) config[key] = String(value)
+      }
+    }
+    channels.push({
+      id,
+      name: String(entry.name ?? '').trim() || id,
+      type,
+      enabled: entry.enabled === true,
+      config,
+    })
+  }
+  return channels
+}
+
+/** 告警路由归一化：严格按形状采纳，缺事件键时补 true（与后端默认一致），形状不对返回 null */
+export function normalizeNotifyAlerts(raw: unknown): NotifyAlerts | null {
+  if (!raw || typeof raw !== 'object') return null
+  const record = raw as Record<string, unknown>
+  const events = record.events && typeof record.events === 'object'
+    ? (record.events as Record<string, unknown>)
+    : {}
+  return {
+    enabled: record.enabled === true,
+    events: {
+      onDegraded: events.onDegraded !== false,
+      onOffline: events.onOffline !== false,
+      onProbeDisabled: events.onProbeDisabled !== false,
+    },
+    quietStart: /^\d{2}:\d{2}$/.test(String(record.quietStart ?? '')) ? String(record.quietStart) : '',
+    quietEnd: /^\d{2}:\d{2}$/.test(String(record.quietEnd ?? '')) ? String(record.quietEnd) : '',
+  }
+}
+
+/** HH:mm 静默时间校验：合法返回原值（归一成两位数），非法返回 null */
+export function normalizeQuietTime(raw: string): string | null {
+  const matched = String(raw ?? '').trim().match(/^(\d{1,2}):(\d{2})$/)
+  if (!matched) return null
+  const hours = Number(matched[1])
+  const minutes = Number(matched[2])
+  if (hours > 23 || minutes > 59) return null
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+}
+
+/** 时间值的可比数字（HH:mm → 分钟数；非法给 -1） */
+function quietMinutes(time: string): number {
+  const normalized = normalizeQuietTime(time)
+  if (normalized === null) return -1
+  return Number(normalized.slice(0, 2)) * 60 + Number(normalized.slice(3, 5))
+}
+
+/**
+ * 单渠道草稿校验：返回错误文案，'' = 通过。在视图层保存前先挡一道（提示短、省一次
+ * 往返），后端仍会再校验一遍 —— 这里挡的是抄写类错误（空名、URL 抄漏了协议、
+ * JSON 少个引号），后端挡的是它自己的口径。
+ */
+export function validateNotifyChannel(channel: NotifyChannel): string {
+  if (!channel.name.trim()) return '渠道名称不能为空'
+  const spec = notifyTypeSpec(channel.type)
+  if (!spec) return `未知的渠道类型：${channel.type}`
+  for (const field of spec.fields) {
+    const value = (channel.config[field.key] ?? '').trim()
+    if (field.required && !value) return `「${field.label}」不能为空`
+    if (!value) continue
+    if (field.key === 'url' && !/^https?:\/\//i.test(value)) {
+      return `「${field.label}」需要以 http:// 或 https:// 开头（当前填的是 ${value}）`
+    }
+    if (field.key === 'headers') {
+      try {
+        const parsed: unknown = JSON.parse(value)
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return `「${field.label}」需要是一个 JSON 对象（如 {"Content-Type":"application/json"}）`
+        }
+      } catch {
+        return `「${field.label}」不是合法的 JSON：请检查引号、逗号是否配对`
+      }
+    }
+  }
+  // 静默时段式的自洽检查不涉及渠道；这里再查一遍 Webhook 模板的占位符拼写：
+  // {{tittle}} 之类的手误不会被报错，只会让报文里留着字面量 —— 点出来省得排查
+  const template = (channel.config.template ?? '')
+  for (const match of template.match(/\{\{\s*[a-zA-Z]+\s*\}\}/g) || []) {
+    const token = match.replace(/[{}\s]/g, '')
+    if (token !== 'title' && token !== 'body') {
+      return `报文模板里的占位符 ${match} 不认识（可用 {{title}} 与 {{body}}）`
+    }
+  }
+  // 静默时段式的语义检查：URL 类字段抄进主题路径没有做强校验（各家形态不同），交给后端
+  void quietMinutes
+  return ''
+}
+
+/** 密钥打码：卡片摘要里给「抄对没有」的线索（首尾几段 + 长度对不对），不回显全文 */
+export function maskNotifySecret(value: string): string {
+  const text = value.trim()
+  if (!text) return '（未填）'
+  if (text.length <= 8) return `${text.slice(0, 2)}••••`
+  return `${text.slice(0, 6)}••••${text.slice(-4)}`
+}
+
+/** 渠道卡片摘要：按字段表把 config 摆成一行（密钥打码），没配置项时退回类型说明 */
+export function notifyChannelSummary(channel: NotifyChannel): string {
+  const spec = notifyTypeSpec(channel.type)
+  if (!spec || spec.fields.length === 0) return spec?.desc || ''
+  return spec.fields.map(field => {
+    const value = (channel.config[field.key] ?? '').trim()
+    const shown = value ? (field.secret ? maskNotifySecret(value) : value) : '（未填）'
+    return `${field.label}：${shown}`
+  }).join(' · ')
+}
+
 
 export type NumberField = {
   /** 后端 config 的 JSON 键（大小写必须逐字一致，否则 PUT 被静默忽略） */
@@ -734,6 +1299,9 @@ export const TIPS = {
   prefsLock: '锁屏遮罩盖住整个页面，解锁前无法操作。开启后：可在本分区一键立即锁屏；鼠标 / 键盘空闲达到设定分钟数自动锁屏（有活动就重新计时，可设 0–1440 分钟，0 = 不自动锁屏）；锁屏状态会持久化，刷新页面后仍在锁屏，解锁才清除。解锁密码仅保存在本机浏览器（明文存 localStorage，不上传服务器），留空则锁屏后点击即可解锁。锁屏参数由壳在页面加载时读取，改动需刷新页面后生效；「立即锁屏」会自动先保存再刷新，直接进入锁屏。',
   shellTags: '内容区顶部的页签栏记录本次会话打开过的页面：首页「报表」固定不可关闭，其余页签可单独关闭、右键批量操作，清单在刷新后保留（存档非法项会自动丢弃、自动去重）。「清空页签（回到首页）」调用页签栏自带的「全部关闭」：立即回到只剩首页并跳回首页，不用刷新。',
   shellNotify: '顶栏铃铛是通知中心：每 60 秒轮询一次最近 8 条网关运行事件（页面切到后台时暂停轮询、回前台立即补拉；间隔固定、暂不可配置），只统计 error / warn 级别的未读角标，打开面板即全部记为已读；首轮拉到数据时会把当时的水位记为已读，历史告警不追着新用户响。完整历史在「日志」页查看。',
+  /* ── 通知中心（渠道与告警路由，本次新增）── */
+  notifyChannels: '通知渠道是网关把告警**推到外面**的出口：每条渠道是一组「类型 + 地址 / 凭据」，支持 16 种服务（Webhook / Telegram / 钉钉 / 飞书 / Bark 等），同一类型可以配多条（比如两个不同的钉钉群）。清单整体保存在网关配置里，添加 / 编辑 / 删除 / 启停都是**全量保存**——请求进行中整块禁用，成功后按后端返回的清单重画。卡片摘要里密钥类字段打码显示（只露首尾几段）供核对，编辑时输入框里是完整值，保存时按输入框里的值原样落盘。「测试」按钮会用与真实告警完全相同的通道发一条测试消息，收到即配置正确。',
+  notifyAlerts: '告警事件路由决定「哪些事件要推送到渠道」：总开关关闭时任何事件都不做外部推送；三路事件开关各对应一类故障（429 降级 / 账号掉线 / 探活自动禁用），只影响**站外推送**——事件本身永远会写入事件日志并出现在顶栏铃铛里。静默时段（HH:mm 起止，本地时区）内的告警照常记录、照常亮红点，只是**不推送到渠道**，适合夜间免打扰；两端都留空 = 不启用静默，只填一端保存不会通过。',
 } as const
 
 /** 面板底注（`.hint.retention-note`）与各面板内的说明行 */
@@ -773,6 +1341,10 @@ export const NOTES = {
   prefDisplayItems: '这些开关与偏好抽屉「布局 / 通用」页签里的同名项目是同一批配置：改这里立即生效，抽屉打开后看到的也是改过的值。全部保存在本机偏好里，不随账号同步。',
   shellPane: '页签与通知都是外壳（浏览器内）功能：页签清单（aibuddy-tags）、通知已读水位（aibuddy-notify-read）、内容区全屏（aibuddy-content-max）都保存在本机 localStorage，不随账号走。通知中心的 60 秒轮询间隔是固定值，页面不可见时自动暂停、回前台立即补拉。',
   shellResetUnread: '清除通知中心的已读水位（aibuddy-notify-read）并立即重算：已亮着的红点随之清零，水位在重算时按当前最新事件重建 —— 之后的 error / warn 告警才会计未读。适合「红点想清零、从现在重新计数」的场景。',
+  /* ── 通知中心（本次新增）── */
+  notifyChannels: '渠道清单整体保存在网关配置里：每次添加 / 编辑 / 删除 / 启停都会把全部渠道一次性保存（PUT /api/notify/channels），请求进行中整块禁用。删除需要确认，删除后不可恢复 —— 好在配置不复杂，重新添加一张同样的渠道即可。',
+  notifyQuiet: '静默时段（本地时区 HH:mm）内的告警**只记录不推送**：事件日志照常写、铃铛照常亮红点，渠道收不到推送；开始与结束都填写才生效，两端都留空 = 不启用静默。',
+  notifyBell: '顶栏铃铛（通知中心）读的是网关事件日志，属于站内提醒：不需要配置渠道、也不受这里的总开关与事件路由控制；本页管的是站外推送（微信 / Telegram / 手机通知等）。两者相互独立 —— 关掉推送，铃铛照常工作。',
 } as const
 
 /** 状态行（`.settings-state`）的派生文案：与旧实现的赋值逐字一致 */
@@ -798,4 +1370,7 @@ export const STATES = {
   zoomWeb: '网页端的界面缩放由浏览器自己控制（Ctrl + / Ctrl -，或浏览器菜单里的缩放），此项不可调。',
   zoomDefault: '当前按 100% 显示（默认比例）。',
   languageOnly: '当前界面语言为简体中文（目前仅提供这一种）。',
+  // ── 通知中心（本次新增）──
+  notifyChannelsUnavailable: '未能读取通知渠道，请稍后重试',
+  notifyAlertsUnavailable: '未能读取告警事件路由，请稍后重试',
 } as const

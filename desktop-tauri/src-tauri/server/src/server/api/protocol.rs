@@ -34,6 +34,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use serde_json::{json, Value};
 
+use crate::server::core::key_quota;
 use crate::server::core::key_scope::KeyScope;
 use crate::server::core::protocol::{anthropic, responses};
 use crate::server::core::upstream::cancellation;
@@ -114,6 +115,16 @@ pub async fn responses_endpoint(
     let scope = key_scope.map(|Extension(scope)| scope);
     let started_at = logging::now_ms();
     let path = "/v1/responses";
+    // Key 额度 / 有效期准入（与 /v1/chat/completions 同一处时点、同一套文案，
+    // 见 api::chat 的说明）：过期 / 超配额 → 403，未命中 Key 放行。
+    if let Err(message) = key_quota::check_scope(scope.as_ref()) {
+        let error = GatewayError::with_status(403, message);
+        record_early_failure(&state, started_at, "", "", &error);
+        return error.payload_response();
+    }
+    // 记账键在 scope 被 move 进转发层之前抄好（随 RecordContext 带到收尾，
+    // 见 `key_quota::key_id_of` 的说明）
+    let key_id = key_quota::key_id_of(scope.as_ref());
     let raw = match parse_object(&state, started_at, path, &body) {
         Ok(value) => value,
         Err(response) => return response,
@@ -220,6 +231,8 @@ pub async fn responses_endpoint(
         // 在聚合完成后补，流式由 RecordingStream 在流结束时定稿
         raw_request: pipeline::raw_body_text(&body),
         raw_response: None,
+        // Key 额度计量的记账键（入口在 scope 被 move 前抄好，见上面）
+        key_id,
     };
 
     match outcome {
@@ -300,6 +313,15 @@ pub async fn messages_endpoint(
     let scope = key_scope.map(|Extension(scope)| scope);
     let started_at = logging::now_ms();
     let path = "/v1/messages";
+    // Key 额度 / 有效期准入（与另两条入口同一处时点与文案，见 api::chat）；
+    // 失败响应走 Anthropic 的错误形态（与本入口的其它错误一致）
+    if let Err(message) = key_quota::check_scope(scope.as_ref()) {
+        let error = GatewayError::with_status(403, message);
+        record_early_failure(&state, started_at, "", "", &error);
+        return anthropic_error_response(&error);
+    }
+    // 记账键在 scope 被 move 进转发层之前抄好（见 `key_quota::key_id_of`）
+    let key_id = key_quota::key_id_of(scope.as_ref());
     let raw = match parse_object(&state, started_at, path, &body) {
         Ok(value) => value,
         Err(response) => return response,
@@ -390,6 +412,8 @@ pub async fn messages_endpoint(
         // 在聚合完成后补，流式由 RecordingStream 在流结束时定稿
         raw_request: pipeline::raw_body_text(&body),
         raw_response: None,
+        // Key 额度计量的记账键（入口在 scope 被 move 前抄好，见上面）
+        key_id,
     };
 
     match outcome {

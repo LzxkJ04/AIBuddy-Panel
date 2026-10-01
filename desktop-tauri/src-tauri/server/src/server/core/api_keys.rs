@@ -58,6 +58,15 @@ pub struct ApiKeyEntry {
     pub allowed_providers: Vec<String>,
     /// 可用模型白名单（**对外模型名**，含映射 alias）；**空 = 不限制**
     pub allowed_models: Vec<String>,
+    /// 总 Token 配额；**`None` = 不限制**。
+    ///
+    /// 为什么是 `Option` 而不是「0 = 不限制」：JSON 里 `null`（字段没配过）
+    /// 与 `0`（把配额填成零）是两种意图，`Option` 天然分开两者。判定与累计
+    /// 见 `core::key_quota`（消费点在转发链路，本模块只管存取）。
+    pub quota_tokens: Option<i64>,
+    /// 过期时刻（毫秒 Unix 时间戳）；**`None` = 永不过期**。过期判定在
+    /// `key_scope::KeyScope::expired`（转发链路的消费点）。
+    pub expires_at: Option<i64>,
 }
 
 /// 从 JSON 里读一个「字符串数组」白名单（缺失 / 类型不对 / 空 → 空数组）。
@@ -94,6 +103,31 @@ fn list_value(list: &[String]) -> Value {
     Value::Array(list.iter().map(|item| Value::String(item.clone())).collect())
 }
 
+/// 从 JSON 里读一个**可选的正整数**（额度 / 时间戳共用）。
+///
+/// ── 为什么一律宽容、读不出来就是 `None`（不限制）──────────────
+/// 与上面 `string_list` 同一条硬不变量：这两个字段也是**限制**，读不出来时
+/// 正确的兜底是「不限制」（放行），绝不是丢掉整条记录或把 Key 拉黑 ——
+/// 丢掉 = 用户的 Key 凭空失效（所有客户端立刻 401），拉黑 = 所有请求 403。
+/// 所以只做「能读多少读多少」：缺失 / `null` / 类型不对 / 非正数 / 字符串
+/// 解析失败，一律给 `None`。
+///
+/// 额外收**整值字符串**（`"1700000000000"`）：手改配置文件 / 从别处粘贴时
+/// 时间戳常被带成字符串，JS 的 `Number()` 同样收它（宽容读取侧的口径）。
+fn opt_positive_int(value: Option<&Value>) -> Option<i64> {
+    let number = match value? {
+        Value::Number(number) => number.as_i64().or_else(|| {
+            number
+                .as_f64()
+                .filter(|raw| raw.is_finite() && raw.fract() == 0.0)
+                .map(|raw| raw as i64)
+        }),
+        Value::String(text) => text.trim().parse::<i64>().ok(),
+        _ => None,
+    };
+    number.filter(|raw| *raw > 0)
+}
+
 impl ApiKeyEntry {
     fn from_value(value: &Value) -> Option<Self> {
         let key = value.get("key")?.as_str()?.trim().to_string();
@@ -117,6 +151,8 @@ impl ApiKeyEntry {
             created_at: value.get("createdAt").and_then(Value::as_i64).unwrap_or(0),
             allowed_providers: string_list(value.get("allowedProviders")),
             allowed_models: string_list(value.get("allowedModels")),
+            quota_tokens: opt_positive_int(value.get("quotaTokens")),
+            expires_at: opt_positive_int(value.get("expiresAt")),
         })
     }
 
@@ -129,6 +165,10 @@ impl ApiKeyEntry {
             "createdAt": self.created_at,
             "allowedProviders": list_value(&self.allowed_providers),
             "allowedModels": list_value(&self.allowed_models),
+            // 不设限写 `null`：JSON 里「没有配额 / 没有有效期」的稳定形态
+            //（与白名单「空也得是 []」同一思路 —— 字段恒在，看一眼就知道位置）
+            "quotaTokens": Value::from(self.quota_tokens),
+            "expiresAt": Value::from(self.expires_at),
         })
     }
 
@@ -143,6 +183,8 @@ impl ApiKeyEntry {
             "createdAt": self.created_at,
             "allowedProviders": list_value(&self.allowed_providers),
             "allowedModels": list_value(&self.allowed_models),
+            "quotaTokens": Value::from(self.quota_tokens),
+            "expiresAt": Value::from(self.expires_at),
         })
     }
 }
@@ -176,9 +218,11 @@ pub fn entries_from(raw: &Map<String, Value>) -> Vec<ApiKeyEntry> {
             enabled: true,
             created_at: 0,
             // 旧字段形态的 Key 从来没有白名单概念 —— 空 = 不限制，
-            // 与它升级前的行为（放行一切）逐字一致
+            // 与它升级前的行为（放行一切）逐字一致；额度 / 有效期同理
             allowed_providers: Vec::new(),
             allowed_models: Vec::new(),
+            quota_tokens: None,
+            expires_at: None,
         }],
         _ => Vec::new(),
     }
@@ -311,6 +355,12 @@ pub fn add(
         created_at,
         allowed_providers,
         allowed_models,
+        // 新建的 Key 一律不设限：额度 / 有效期由管理页随后通过
+        // `set_quota`（PUT /api/keys/{id}/quota）单独配 —— `add` 的签名是
+        // keys_api 既有调用点的契约，这里不顺手扩参（改签名会同时动到
+        // 「既有逻辑不许碰」的 keys_api.rs）
+        quota_tokens: None,
+        expires_at: None,
     };
     entries.push(entry.clone());
     save(&entries);
@@ -362,4 +412,30 @@ pub fn remove(id: &str) -> Result<(), String> {
     }
     save(&entries);
     Ok(())
+}
+
+/// 设置额度 / 有效期（`None` = 清除该限制），返回更新后的记录。
+///
+/// 与 `update` 的三态（`Option<Vec<_>>`）不同，这里**两层都是一层**：
+/// `quota_tokens: Option<i64>` 的 `None` 就是「清除配额」。原因是本函数只服务
+/// `PUT /api/keys/{id}/quota`（整份语义的专用端点，见 `api::key_quota_api`）：
+/// 前端总是先 GET 回显再整表提交，不存在「旧版前端只发一半字段」的历史包袱，
+/// 「缺了就是想清掉」在这个端点上不会误伤。
+///
+/// **动额度不动用量**：已用 Token 计数（`core::key_quota`）是历史事实，
+/// 改配额不清零 —— 想重新计时由端点的 `resetUsed` 参数显式表达。
+pub fn set_quota(
+    id: &str,
+    quota_tokens: Option<i64>,
+    expires_at: Option<i64>,
+) -> Result<ApiKeyEntry, String> {
+    let mut entries = list();
+    let Some(entry) = entries.iter_mut().find(|entry| entry.id == id) else {
+        return Err("Key 不存在".to_string());
+    };
+    entry.quota_tokens = quota_tokens;
+    entry.expires_at = expires_at;
+    let updated = entry.clone();
+    save(&entries);
+    Ok(updated)
 }

@@ -32,6 +32,13 @@
 //!                        结果快照；查询逻辑在 core 是为了让手动与定时共用一份）
 //!   key_scope.rs         本次请求命中的网关 Key 及其可用提供商 / 可用模型限制
 //!                        （R9；中间件放入请求扩展，handler 与转发层读出）
+//!   key_quota.rs         网关 Key 的 Token 配额计量与「过期 / 超配额」准入判定
+//!                        （用量落 kv 的 `keyQuotaUsage`；判定点在三条协议入口，
+//!                        计量点在 `api::pipeline::record_entry` 收尾记账）
+//!   notify.rs            多渠道通知（Webhook / Telegram / 钉钉 / …16 种 HTTP
+//!                        提供商）与账号异常告警的公共入口；渠道配置在配置顶层
+//!                        键 `notifyChannels`，告警开关在 `notifyAlerts`，
+//!                        管理 API 在 `api::notify_api`
 //!   update/              软件更新（版本/出网/下载状态机）（workbuddy-update.mjs）
 //!
 //! ── 模型清单的三个层次（Agent2API 改造 W2a-T2）─────────────
@@ -52,6 +59,7 @@ pub mod api_keys;
 pub mod auth;
 pub mod auth_http;
 pub mod auto_checkin;
+pub mod backup;
 pub mod billing;
 pub mod capability;
 pub mod clash;
@@ -62,10 +70,19 @@ pub mod degrade;
 pub mod egress;
 pub mod endpoints;
 pub mod import_ccswitch;
+// 网关 Key 的额度 / 有效期（quotaTokens / expiresAt 的消费点：转发前准入判定
+// + 收尾 Token 计量；存储与展示见 `core::api_keys`，作用域传播见 `key_scope`）
+pub mod key_quota;
 pub mod key_scope;
 pub mod login;
 pub mod model_rules;
 pub mod models;
+// 多渠道通知与账号异常告警（渠道管理 / 告警设置 / 测试的 API 在 `api::notify_api`；
+// 事件源的埋点位置见该模块 `notify_account_event` 的说明）
+pub mod notify;
+// 账号探活（定时对启用账号发最小上游请求 + 连败自动停用；设置 API 在
+// `api::probe_api`，单账号手动测试在 `api::account_test`）
+pub mod probe;
 pub mod prompt;
 pub mod protocol;
 pub mod providers;

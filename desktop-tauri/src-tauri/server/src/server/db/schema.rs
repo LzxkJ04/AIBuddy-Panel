@@ -146,6 +146,13 @@ pub const RESERVED_KV_KEYS: &[&str] = &[
     // 它不是配置项（配置写入绝不能动它，否则用户配好的代理会被改一次 API Key
     // 清空）。条目不落独立表、只整份读写，理由见那个模块头。
     "proxyPool",
+    // 网关 Key 的 Token 用量计量（core::key_quota）：整份
+    // `{"<keyId>": {usedTokens, updatedAt}}` 一个键 —— 「这把 Key 已经用了
+    // 多少 Token」的累计读数，转发前用它判「配额是否已用尽」。属于
+    // 「其它零散状态」：配置写入绝不能动它（否则改一次配置就把所有 Key
+    // 的已用量清零，配额形同虚设）。与 `proxyPool` 同类：整份读写、不落
+    // 独立表，理由见 `core::key_quota` 的模块头。
+    "keyQuotaUsage",
 ];
 
 /// 这个键是否属于「其它零散状态」（即不归网关配置管）。

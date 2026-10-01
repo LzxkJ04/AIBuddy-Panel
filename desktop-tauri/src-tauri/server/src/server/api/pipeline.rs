@@ -26,6 +26,7 @@ use axum::response::Response;
 use serde_json::Value;
 
 use crate::server::config;
+use crate::server::core::key_quota;
 use crate::server::core::key_scope::{self, KeyScope};
 use crate::server::core::providers::catalog::{
     advertised_manifest_contains, default_model_catalog, default_model_usable,
@@ -359,6 +360,12 @@ pub struct RecordContext {
     /// 非流式路径在记账前由入口直接填（完整 JSON）；流式路径构造时是 None，
     /// 由 `RecordingStream` 在流结束时用累积缓冲定稿 —— 那时才见得到最后一个字节。
     pub raw_response: Option<String>,
+    /// 本次请求命中的网关 Key 记录 id（Key 额度计量的记账键；空串 = 没有
+    /// 命中的 Key —— 免鉴权 / 环境变量 Key / 转发前就失败，见
+    /// `core::key_quota::key_id_of`）。各入口在 `scope` 被 move 进转发层之前
+    /// 抄好带进来：流式请求的记账发生在 handler 返回**之后**（响应流收尾），
+    /// 那时除了随本结构携带没有别的办法把 Key 对上号。
+    pub key_id: String,
 }
 
 /// 把原始字节变成可入库的正文文本（请求侧 / 响应侧共用）。
@@ -408,6 +415,9 @@ pub fn record_early_failure(
         // 请求侧的正文可能解析都没解析成功，存半截没有意义
         raw_request: None,
         raw_response: None,
+        // 转发前就失败（含配额 / 有效期被拒）：没有上游用量，计量键留空
+        //（add_usage 对空串是 no-op）
+        key_id: String::new(),
     };
     record_entry(&context, Some(error.message.clone()));
 }
@@ -514,6 +524,15 @@ fn stored_sensitive_hits(list: &[usage::SensitiveHit]) -> Vec<SensitiveHit> {
 ///   error       旁路槽里的原因优先（更接近根因），否则用调用方给的兜底文案
 pub fn record_entry(context: &RecordContext, fallback_error: Option<String>) {
     let snapshot = context.telemetry.snapshot();
+    // Key 额度计量（`core::key_quota`）：本次真实消耗的 Token 累计进该 Key 的
+    // 已用数，转发前的准入判定（`check_scope`）按它判「配额是否用尽」。放在
+    // 快照取出的紧接着：这里 total_tokens 还没被 entry 的逐字段搬运 move 走。
+    // key_id 为空 / tokens ≤ 0 时 add_usage 自己是 no-op；记账失败只打一行
+    // verbose —— 收尾路径，计量故障不允许反过来影响已经结束的请求（与
+    // `RequestStats::record` 的口径一致）。
+    if let Err(account_error) = key_quota::add_usage(&context.key_id, snapshot.total_tokens) {
+        logging::verbose("[Quota]", &format!("❌ Key 用量记账失败: {account_error}"));
+    }
     // 收尾时刻只取一次：明细里的 durationMs 与日志里打的那一个是同一个值
     let finished_at = logging::now_ms();
     let duration_ms = finished_at - context.started_at;

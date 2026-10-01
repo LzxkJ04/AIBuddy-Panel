@@ -84,6 +84,20 @@ pub fn panel_router(state: ServerState) -> Router {
         // 注册 / 会话刷新 / 登出：同为「认证边界」端点 —— 调用方要么还没有
         // 凭证（setup / login），要么凭证本身就是它们的主张（refresh 带
         // refresh cookie、logout 撤自己的会话），挂 public 由端点自理。
+        .route("/api/audit", get(api::audit_api::query_audit))
+        .route("/api/sessions/list", get(api::sessions_api::list_sessions))
+        .route("/api/sessions/revoke", post(api::sessions_api::revoke_session))
+        .route(
+            "/api/maintenance",
+            get(api::maintenance_api::get_maintenance).put(api::maintenance_api::put_maintenance),
+        )
+        .route("/api/backup/export", get(api::backup_api::get_export))
+        .route("/api/backup/import", post(api::backup_api::post_import))
+        .route(
+            "/api/backup/settings",
+            get(api::backup_api::get_settings).put(api::backup_api::put_settings),
+        )
+        .route("/api/backup/run", post(api::backup_api::post_run))
         .route("/api/panel/status", get(api::panel::panel_status))
         // 品牌外观读取：登录页在鉴权前就要渲染标题与 Logo，挂 /api/panel/ 前缀走豁免
         .route("/api/panel/branding", get(api::branding::get_branding))
@@ -245,6 +259,16 @@ pub fn panel_router(state: ServerState) -> Router {
             "/api/queue",
             get(api::queue_api::get_queue).put(api::queue_api::put_queue),
         )
+        // ── 账号探活（定时连通性检查 + 连败自动停用）──
+        // 与 /api/queue 同一模式：GET 读、PUT（允许部分字段）更新并立即生效；
+        // run 立即执行一轮。挂 protected：它会真打上游（每个启用账号一次最小
+        // 请求）并能自动停用账号，敏感度与 /api/accounts 同级。执行体与设置
+        // 状态在 core::probe（不进 scheduled_tasks 注册表，见其模块头）。
+        .route(
+            "/api/probe/settings",
+            get(api::probe_api::get_settings).put(api::probe_api::put_settings),
+        )
+        .route("/api/probe/run", post(api::probe_api::run_now))
         // ── 调试模式（设置页「通用 → 调试模式」）──
         // GET/PUT 开关；traffic 是按 id 取原始报文的详情端点（列表接口不返回
         // 报文，见 debug_api 的模块头）。挂 protected：报文含上游 URL 与请求体。
@@ -267,15 +291,18 @@ pub fn panel_router(state: ServerState) -> Router {
         .route("/api/upgrade/run", post(api::upgrade_api::run_upgrade))
         // ── 账号管理（对照 workbuddy-account-routes.mjs）──
         // 用 any(...) 注册两条入口（无尾段 + 通配尾段），方法/路径的判定交给
-        // api::accounts::dispatch —— 这是为了复刻 Node 版 tryHandle 的判定顺序
-        // （见那边的注释：`DELETE /api/accounts/export` 会被当成账号 id）。
-        // axum 的静态路由 + {id} 写法会把这类组合拆成 405，与 Node 分叉。
+        // api::account_test::accounts_entry —— 它先拦一键测试
+        // （POST /api/accounts/{id}/test），其余原样转交 api::accounts 的分发。
+        // 这是复刻 Node 版 tryHandle 判定顺序的既有结构（见 api::accounts 的
+        // 注释：`DELETE /api/accounts/export` 会被当成账号 id）；axum 的静态
+        // 路由 + {id} 写法会把这类组合拆成 405，与 Node 分叉，且 matchit 0.8
+        // 不允许 {id} 段与既有的 {*rest} 通配共存（插入即冲突）。
         // 单独登记尾斜杠形态：`/api/accounts/` 在 axum 的 `{*rest}` 里匹配不上
         // （通配要求至少一个非空段），不登记就会落到全局 404（OpenAI 形状），
         // 而 Node 版对它的响应是管理 API 形状的 404
-        .route("/api/accounts", any(api::accounts::accounts_entry))
-        .route("/api/accounts/", any(api::accounts::accounts_entry))
-        .route("/api/accounts/{*rest}", any(api::accounts::accounts_entry))
+        .route("/api/accounts", any(api::account_test::accounts_entry))
+        .route("/api/accounts/", any(api::account_test::accounts_entry))
+        .route("/api/accounts/{*rest}", any(api::account_test::accounts_entry))
         // ── 出网代理（Clash Verge 实时读取 + 出口连通性测试 + 代理池）──
         // /api/proxies 与 /api/proxies/pool* 之外（如 /api/proxies/zzz）不注册
         // → 落到全局 404 兜底，与 Node 版「前缀判定不通过 → 全局兜底」一致。
@@ -516,6 +543,9 @@ pub fn gateway_router(state: ServerState) -> Router {
     let open = Router::new()
         .route("/health", get(api::health::handle))
         .route("/v1/models", get(api::chat::list_models))
+        // 维护模式闸：/v1/*（含免鉴权的 /v1/models 探针）在维护期间一律 503；
+        // /health 与 /api/* 不拦 —— 管理员必须还能进面板关维护
+        .layer(axum::middleware::from_fn(maintenance_gate))
         .with_state(state.clone());
     // 三条协议入口 + Anthropic 的 token 计数端点：都查 API Key。
     // 与 chat/completions 完全同构：都走同一套转发链路，差异只在出入口的
@@ -623,6 +653,20 @@ fn attach_cors(headers: &mut axum::http::HeaderMap) {
 /// 注意 `/v1/models` 在 public 组、**不经过本中间件** —— 它有自己的一条限制
 /// 生效点（见 `api::chat::list_models`），用的是同一份 `KeyScope` 语义
 /// （但那里是「有记录就按记录过滤，没有就不过滤」，因为它免鉴权也能用）。
+/// 维护模式闸：/v1/* 一律 503（面板与 /health 不拦 —— 管理员必须还能进面板关维护）。
+/// 开关持久化在 kv（maintenanceMode），热路径走 AtomicBool（见 maintenance_api）。
+async fn maintenance_gate(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if api::maintenance_api::maintenance_enabled()
+        && request.uri().path().starts_with("/v1/")
+    {
+        return api::maintenance_api::maintenance_response();
+    }
+    next.run(request).await
+}
+
 async fn require_api_key(mut request: Request, next: Next) -> Response {
     // 每次都读内存快照（不是读文件），所以「刚保存的新 key」下一个请求就生效。
     // 快照取一次、整个判定过程复用（`current()` 会克隆整份配置，鉴权是每个请求
@@ -630,6 +674,10 @@ async fn require_api_key(mut request: Request, next: Next) -> Response {
     let snapshot = crate::server::config::current();
     let keys = snapshot.active_api_keys();
     let path = request.uri().path();
+    // 维护模式拦截（在 fail-closed 判定之前）
+    if api::maintenance_api::maintenance_enabled() && path.starts_with("/v1/") {
+        return api::maintenance_api::maintenance_response();
+    }
 
     // ── 面板认证（headless 配置了管理员时启用）──────────────────
     // `/api/*` 认「会话 cookie（人，账号密码换来）」或「API Key（程序，

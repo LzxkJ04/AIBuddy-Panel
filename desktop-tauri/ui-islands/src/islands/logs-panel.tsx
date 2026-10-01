@@ -172,6 +172,14 @@ const KEYWORD_DEBOUNCE_MS = 300
 const DEFAULT_FILE = '~/.agent2api/logs.jsonl'
 
 /**
+ * 「导出日志」按钮的下载端点（GET /api/logs/download，直接回 JSONL 附件，见
+ * api::logs_api::download_logs）：window.open 交给浏览器按 Content-Disposition 落盘。
+ * 与面板头部「导出」的分工：那颗走壳侧保存对话框（桌面端专属），这颗走浏览器下载
+ * —— 网页端部署（只有浏览器）也有一个导出入口。
+ */
+const LOGS_DOWNLOAD_URL = '/api/logs/download'
+
+/**
  * 合法的时间档位，与后端 /api/stats/summary 的白名单同字面量（报表页也是这一组）。默认
  * 「全部」而不是报表页的 7 天：日志页原先没有任何时间条件，加筛选时默认必须落在「行为不变」
  * 的那一档上。
@@ -1081,6 +1089,15 @@ function LogsPanel() {
               onChange={event => onKeywordChange(event.currentTarget.value)} />
             <InputGroupAddon aria-hidden='true'>⌕</InputGroupAddon>
           </InputGroup>
+          {/* 「导出日志」：window.open 下载端点，浏览器按附件落盘（整个日志文件，不带筛选
+              —— 下载端点没有查询参数）。禁用看 data.total（= 全库条数，页脚徽标同一个数）：
+              库里一条都没有时下载到的只是空文件；筛选把当前视图筛空了但库里还有日志时，
+              导出的仍然是全部日志，不该禁用。shrink-0 与时间档位同款：不让按钮被压缩换行。 */}
+          <Button id='btn-logs-download' variant='outline' className='shrink-0'
+            disabled={data.total === 0} title='把全部运行日志下载为 JSONL 文件'
+            onClick={() => window.open(LOGS_DOWNLOAD_URL, '_blank', 'noopener')}>
+            导出日志
+          </Button>
         </div>
 
         {/* 级别快捷筛选 chips：与上面的级别下拉写同一份 filters.level（一条 onSelectChange

@@ -45,12 +45,18 @@ import {
   TIMEOUT_FIELDS,
   errorMessage,
   normalizeApp,
+  normalizeNotifyAlerts,
+  normalizeNotifyChannels,
   normalizeNumbers,
+  normalizeQuietTime,
+  notifyApi,
   parseInteger,
   shared,
   toast,
   type AppSettings,
   type GatewayBlocks,
+  type NotifyAlerts,
+  type NotifyChannel,
   type NumberField,
   type PromptPatch,
 } from './settings-model'
@@ -77,6 +83,8 @@ export type BusyScope =
   | 'captcha'
   | 'export'
   | 'import'
+  | 'notify'
+  | 'notifyAlerts'
   | null
 
 /**
@@ -176,6 +184,24 @@ export type StorageState = {
 /** 导入失败明细（只列前 3 条，more 表示还有更多） */
 export type IoFailure = { failed: number; detail: string; more: boolean } | null
 
+/**
+ * 「通知中心」的两块后端数据（渠道清单与告警事件路由）。
+ *
+ * 两块各自有自己的三态与生效值：它们是**两个独立端点**（/api/notify/channels 与
+ * /api/notify/alerts），一个挂了不该把另一块也画成不可用。`channels` / `alerts`
+ * 为 null = 没读到（loading / unavailable），视图据此整块禁用。
+ */
+export type NotifyState = {
+  /** 渠道清单三态 */
+  channelsStatus: LoadStatus
+  /** 生效渠道（后端确认过的清单）；null = 未读到 */
+  channels: NotifyChannel[] | null
+  /** 告警路由三态 */
+  alertsStatus: LoadStatus
+  /** 生效的告警路由；null = 未读到 */
+  alerts: NotifyAlerts | null
+}
+
 export type SettingsSnapshot = {
   /** 当前分类（左侧导航与右侧面板的显隐都由它派生） */
   category: string
@@ -200,6 +226,8 @@ export type SettingsSnapshot = {
   retentionConfirm: { head: string } | null
   /** 面板登录整块：仅网页端渲染 */
   panelLogin: boolean
+  /** 「通知中心」分类：渠道清单与告警事件路由（两个端点、两份三态） */
+  notify: NotifyState
 }
 
 /** 是否网页端（桌面壳的面板跟着应用走，没有「登录面板」的概念） */
@@ -252,6 +280,7 @@ const INITIAL: SettingsSnapshot = {
   ioFailure: null,
   retentionConfirm: null,
   panelLogin: false,
+  notify: { channelsStatus: 'loading', channels: null, alertsStatus: 'loading', alerts: null },
 }
 
 /* ─── 快照 store ───────────────────────────── */
@@ -1397,11 +1426,187 @@ export async function panelLogout(): Promise<boolean> {
   }
 }
 
+/* ─── 通知中心：渠道与告警路由（/api/notify/*，fetch 直连） ── */
+
+/** 补 notify 快照的局部小助手（publish 换新对象，订阅者按引用比较感知变化） */
+function patchNotify(patch: Partial<NotifyState>): void {
+  publish({ notify: { ...snapshot.notify, ...patch } })
+}
+
+/** 渠道清单按响应重铺：形状不对（null）整块转「不可用」，与其它面板同一口径 */
+export function renderNotifyChannels(data?: unknown): void {
+  if (data === undefined) return
+  const channels = normalizeNotifyChannels(data)
+  patchNotify({ channels, channelsStatus: channels === null ? 'unavailable' : 'ready' })
+}
+
+async function loadNotifyChannels(): Promise<void> {
+  try {
+    renderNotifyChannels(await notifyApi('GET', '/api/notify/channels'))
+  } catch (error) {
+    console.warn('读取通知渠道失败:', errorMessage(error))
+    renderNotifyChannels(null)
+  }
+}
+
+/** 告警路由按响应重铺 */
+export function renderNotifyAlerts(data?: unknown): void {
+  if (data === undefined) return
+  const alerts = normalizeNotifyAlerts(data)
+  patchNotify({ alerts, alertsStatus: alerts === null ? 'unavailable' : 'ready' })
+}
+
+async function loadNotifyAlerts(): Promise<void> {
+  try {
+    renderNotifyAlerts(await notifyApi('GET', '/api/notify/alerts'))
+  } catch (error) {
+    console.warn('读取告警事件路由失败:', errorMessage(error))
+    renderNotifyAlerts(null)
+  }
+}
+
+/** 通知中心的数据入口：两个端点并行，各自失败各自降级（与 load() 的整体策略一致） */
+export async function loadNotify(): Promise<void> {
+  await Promise.all([loadNotifyChannels(), loadNotifyAlerts()])
+}
+
+/**
+ * 渠道清单的**全量保存**（PUT /api/notify/channels）：后端契约是整单覆盖，没有
+ * 增 / 删 / 改的单项端点，所以添加、编辑、删除、卡片上的启停最终都汇到这一个流程 ——
+ * 调用方把「改完的整份清单」递进来，这里只负责乐观写入 → PUT → 按响应重画 → 失败回滚。
+ * 返回 true = 保存成功（视图据此收掉添加 / 编辑表单）。
+ */
+export async function saveNotifyChannels(next: NotifyChannel[], okText: string): Promise<boolean> {
+  if (busyScope) return false
+  beginBusy('notify')
+  const previous = snapshot.notify.channels
+  // 乐观写入：界面立即反映这次改动（视图按 busy === 'notify' 禁用整块）
+  patchNotify({ channels: next, channelsStatus: 'ready' })
+  try {
+    const saved = await notifyApi('PUT', '/api/notify/channels', { channels: next })
+    // 响应带清单就以后端确认的为准（排序、补字段的最终口径在那边）；
+    // 只回 {success:true} 的形状就保留乐观值 —— 不能因为响应没带清单就判「不可用」
+    const normalized = normalizeNotifyChannels(saved)
+    if (normalized) patchNotify({ channels: normalized })
+    toast(okText)
+    return true
+  } catch (error) {
+    patchNotify({ channels: previous, channelsStatus: previous ? 'ready' : 'unavailable' })
+    toast(`保存失败：${errorMessage(error)}`, 'err')
+    return false
+  } finally {
+    endBusy()
+  }
+}
+
+/** 卡片上的启用开关：等价于一次只改 enabled 的全量保存（确认？不需要 —— 启停随时可拨回） */
+export async function toggleNotifyChannel(id: string, enabled: boolean): Promise<void> {
+  const list = snapshot.notify.channels
+  if (!list) return
+  const channel = list.find(item => item.id === id)
+  if (!channel || channel.enabled === enabled) return
+  await saveNotifyChannels(
+    list.map(item => (item.id === id ? { ...item, enabled } : item)),
+    enabled ? `✅ 渠道「${channel.name}」已启用` : `渠道「${channel.name}」已停用`,
+  )
+}
+
+/** 删除渠道（确认框在视图层做完才进来）：从清单里剔除后全量保存 */
+export async function removeNotifyChannel(id: string): Promise<void> {
+  const list = snapshot.notify.channels
+  if (!list || !list.some(item => item.id === id)) return
+  const name = list.find(item => item.id === id)?.name || id
+  await saveNotifyChannels(list.filter(item => item.id !== id), `已删除渠道「${name}」`)
+}
+
+/**
+ * 发测试消息：带 channelId 点名单个渠道，不带则测全部启用的渠道。
+ * 成败都以 toast 收尾 —— 按钮上的转圈由视图自己的本地状态管（await 本函数）。
+ */
+export async function testNotifyChannel(channelId?: string): Promise<void> {
+  try {
+    await notifyApi('POST', '/api/notify/test', channelId ? { channelId } : {})
+    toast(channelId ? '✅ 测试消息已发送，请到对应渠道查收' : '✅ 已向全部启用的渠道发送测试消息')
+  } catch (error) {
+    toast(`测试失败：${errorMessage(error)}`, 'err')
+  }
+}
+
+/**
+ * 告警路由的保存：PUT 的是**全量对象**（总开关 + 三路事件 + 静默时段），
+ * patch 与快照按维度合并后整单发 —— 后端没有部分更新契约，整单发最稳。
+ * 乐观写入 + 失败回滚，与其它开关同一套节奏；忙碌中早退时受控开关自动弹回。
+ *
+ * patch 的 events 是**深一层 Partial**（调用方通常只拨一路开关），与快照里
+ * 生效的那份事件表合并后才成完整对象。
+ */
+export type NotifyAlertsPatch = {
+  enabled?: boolean
+  events?: Partial<NotifyAlerts['events']>
+  quietStart?: string
+  quietEnd?: string
+}
+
+export async function saveNotifyAlerts(patch: NotifyAlertsPatch, okText?: string): Promise<void> {
+  if (busyScope) { repaint(); return }
+  const previous = snapshot.notify.alerts
+  if (!previous) return // 未读到后端值之前不允许动（开关此时是禁用的，这是双保险）
+  const next: NotifyAlerts = {
+    ...previous,
+    ...patch,
+    events: { ...previous.events, ...(patch.events ?? {}) },
+  }
+  beginBusy('notifyAlerts')
+  patchNotify({ alerts: next })
+  try {
+    const saved = await notifyApi('PUT', '/api/notify/alerts', next)
+    // 只在响应**长得像**告警路由（有 enabled 键）时才采纳：PUT 可能只回
+    // {success:true}，直接归一化会把缺字段读成「总开关关闭」，把乐观值顶掉
+    const looksLikeAlerts = !!saved && typeof saved === 'object'
+      && 'enabled' in (saved as Record<string, unknown>)
+    const normalized = looksLikeAlerts ? normalizeNotifyAlerts(saved) : null
+    patchNotify({ alerts: normalized ?? next })
+    toast(okText ?? '✅ 告警事件路由已保存')
+  } catch (error) {
+    patchNotify({ alerts: previous })
+    toast(`保存失败：${errorMessage(error)}`, 'err')
+  } finally {
+    endBusy()
+  }
+}
+
+/**
+ * 静默时段：起止**成对**校验后走 saveNotifyAlerts —— 单端留空、格式不是 HH:mm、
+ * 时分越界都在这里挡下（提示比后端 400 更短、更早）；两端都空 = 清除静默。
+ */
+export async function saveNotifyQuiet(startRaw: string, endRaw: string): Promise<void> {
+  const start = startRaw.trim()
+  const end = endRaw.trim()
+  if (!start && !end) {
+    await saveNotifyAlerts({ quietStart: '', quietEnd: '' }, '✅ 已清除静默时段（告警恢复即时推送）')
+    return
+  }
+  if (!start || !end) {
+    toast('静默时段需要同时填写开始与结束时间（或都留空关闭）', 'err')
+    return
+  }
+  const quietStart = normalizeQuietTime(start)
+  const quietEnd = normalizeQuietTime(end)
+  if (!quietStart || !quietEnd) {
+    toast('静默时间格式应为 HH:mm，且时分不越界（如 23:00、07:00）', 'err')
+    return
+  }
+  await saveNotifyAlerts(
+    { quietStart, quietEnd },
+    `✅ 静默时段已设为 ${quietStart} – ${quietEnd}（期内只记录不推送）`,
+  )
+}
+
 /* ─── 加载入口 ─────────────────────────────── */
 
 /**
  * 设置页数据入口（app.js 切入该页时调用，upgrade-panel 迁移完成后也调）。
- * 九个取数并行，各自失败各自降级 —— 一个接口挂了不该把整页拖成空白。
+ * 十来个取数并行，各自失败各自降级 —— 一个接口挂了不该把整页拖成空白。
  */
 export async function load(): Promise<void> {
   restoreCategory()
@@ -1418,6 +1623,7 @@ export async function load(): Promise<void> {
     loadPrompt(),
     loadStorage(),
     loadCaptcha(),
+    loadNotify(),
     // 软件更新面板是另一个岛（update-panel.tsx），切进设置页时让它自己刷新一次
     shared().wbUpdatePanel?.load?.(),
   ])
@@ -1463,4 +1669,9 @@ export async function refreshPrompt(): Promise<void> {
 export async function refreshStorage(): Promise<void> {
   await loadStorage()
   toast('存储概况已刷新')
+}
+
+export async function refreshNotify(): Promise<void> {
+  await loadNotify()
+  toast('通知设置已刷新')
 }

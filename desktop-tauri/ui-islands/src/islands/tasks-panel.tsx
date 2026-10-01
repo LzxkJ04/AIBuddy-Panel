@@ -1040,6 +1040,12 @@ function TasksPanel() {
           <Button variant='outline' onClick={() => void loadPanel().then(() => toast('定时任务已刷新'))}>
             刷新
           </Button>
+          {/* 「刷新全部」：走对外契约里的整体 load()（runLoad → loadPanel，间隔型清单与
+              自动签到两个接口在 loadPanel 里本来就一起重拉）。做法照旁边那颗「刷新」：
+              不看结果，一律报已刷新。给个更明确的「全部」说法，也留作页面骨架里的锚点。 */}
+          <Button variant='outline' onClick={() => void load().then(() => toast('已刷新'))}>
+            刷新全部
+          </Button>
         </div>
       </div>
       <div className='panel-body'>

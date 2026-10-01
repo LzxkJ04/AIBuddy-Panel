@@ -331,6 +331,14 @@ impl ServerState {
         // 与任务状态同为「kv 固定键 + 整份读写」的形态，把同一个 `Db` 传进去。
         // 它不参与启动预热，位置只要求早于任何一次 `/api/proxies/pool*` 请求。
         core::proxy_pool::install(db.clone());
+        // 定时备份（「运维」页的整库快照）：同一形态注入 `Db`，排期落库、
+        // 跨重启跨实例；轮询循环在 bootstrap 末尾随其它后台任务一起 spawn
+        // （见 `core::backup::spawn`）。设置接口在 `api::backup_api`。
+        core::backup::install(db.clone());
+        // 网关 Key 的 Token 配额计量（kv 的 `keyQuotaUsage`，见 `core::key_quota`）：
+        // 同一形态注入 `Db`。它不参与启动预热，位置只要求早于第一条转发请求 ——
+        // 三条协议入口的准入判定（`check_scope`）与收尾记账（`add_usage`）都要用它。
+        core::key_quota::install(db.clone());
         // 模型清单的持久化缓存：把**同一个 `Db`** 传进去（与配置 / 日志库 /
         // 账号库同一形态）。各家的远程清单在进程重启后由它读回，不再回落到
         // 内置清单（见 `core::providers::catalog_cache` 的模块头）。
@@ -663,6 +671,9 @@ impl ServerState {
         // 服务器停机时进程会结束，任务随之消失。用 crate::spawn_task
         // （与 auto_checkin 同一理由）保证从非 tokio 上下文调用也能进入全局运行时。
         core::scheduled_tasks::spawn(state.store.clone(), state.update.clone());
+        // 定时备份的轮询循环（60s tick；tick 里先读设置，开关关闭时不碰库 ——
+        // 排期/占位/冷却在 `core::task_state`，到点判定与手动入口共用它）。
+        core::backup::spawn();
 
         Ok(state)
     }

@@ -35,13 +35,18 @@
 //! 并保持与 Node 版一致的分组（需鉴权的一律挂 `protected`）。
 
 pub mod accounts;
+// 账号一键连通性测试（POST /api/accounts/{id}/test）+ /api/accounts* 的入口
+// 包装（matchit 不允许 {id} 与既有 {*rest} 共存，包装入口见该文件模块头）
+pub mod account_test;
 // 品牌外观（站点标题 / Logo）：GET 挂 public（登录页鉴权前渲染）、PUT 挂 protected
 pub mod branding;
 // `/api/accounts/usage` 的查询与结果组装（从 accounts.rs 拆出：余额能力从
 // 「只服务 workbuddy」扩到四家混查时新增，见该文件模块头）
 pub mod accounts_usage;
+pub mod audit_api;
 pub mod auto_checkin;
 pub mod billing;
+pub mod backup_api;
 pub mod captcha;
 pub mod chat;
 pub mod codearts_welfare;
@@ -60,10 +65,14 @@ pub mod health;
 pub mod import_sources;
 pub mod keys_api;
 pub mod logs_api;
+pub mod maintenance_api;
 pub mod model_manage;
 pub mod models;
 pub mod panel;
 pub mod pipeline;
+// 账号探活的设置与手动执行（GET/PUT /api/probe/settings、POST /api/probe/run）；
+// 探活执行体在 `core::probe`，照 queue_api 的形态接线
+pub mod probe_api;
 pub mod prompt;
 pub mod protocol;
 pub mod proxies;
@@ -72,6 +81,7 @@ pub mod retry_api;
 pub mod sanitize;
 pub mod scheduled_tasks;
 pub mod session;
+pub mod sessions_api;
 pub mod stats_api;
 pub mod storage_api;
 pub mod timeouts_api;

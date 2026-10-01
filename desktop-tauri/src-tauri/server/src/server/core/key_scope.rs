@@ -48,19 +48,55 @@ use crate::server::core::api_keys::ApiKeyEntry;
 /// （模型名、provider id 的比对历来忽略大小写，见 `model_rules` 模块头）。
 #[derive(Clone, Debug, Default)]
 pub struct KeyScope {
+    /// 命中的 Key 记录 id（额度计量按它累计；环境变量 Key / 免鉴权模式没有
+    /// 记录，构造不出本类型，因此这里恒有值）。空串只可能来自手工构造
+    /// 的 `Default` —— 计量与判定对空串一律按「不限制」处理。
+    key_id: String,
     /// 允许的 provider id（小写），空集合 = 不限制
     allowed_providers: HashSet<String>,
     /// 允许的对外模型名（小写），空集合 = 不限制
     allowed_models: HashSet<String>,
+    /// 总 Token 配额（`None` / 部分 = 不限制），见 `core::api_keys` 的字段说明
+    quota_tokens: Option<i64>,
+    /// 过期时刻（毫秒 Unix 时间戳；`None` = 永不过期）
+    expires_at: Option<i64>,
 }
 
 impl KeyScope {
-    /// 由一条 Key 记录构造（`allowed*` 为空 = 该维度不限制）
+    /// 由一条 Key 记录构造（`allowed*` 为空 = 该维度不限制；配额 / 有效期
+    /// 缺失 = 对应维度不限制）
     pub fn from_entry(entry: &ApiKeyEntry) -> Self {
         Self {
+            key_id: entry.id.clone(),
             allowed_providers: normalize(&entry.allowed_providers),
             allowed_models: normalize(&entry.allowed_models),
+            quota_tokens: entry.quota_tokens,
+            expires_at: entry.expires_at,
         }
+    }
+
+    /// 命中的 Key 记录 id（额度计量的记账键，见 `core::key_quota`）
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    /// 总 Token 配额（`None` = 不限制）
+    pub fn quota_tokens(&self) -> Option<i64> {
+        self.quota_tokens
+    }
+
+    /// 过期时刻（毫秒 Unix 时间戳；`None` = 永不过期）
+    pub fn expires_at(&self) -> Option<i64> {
+        self.expires_at
+    }
+
+    /// 是否已过期（`now_ms` 为当前毫秒时间戳）。
+    ///
+    /// 有效期是**闭区间右端**：`expiresAt` 那一刻本身已不可用（用户在界面上
+    /// 填「今晚 24:00 失效」，23:59:59 还能用，00:00:00 起不行）。
+    /// 时间戳非法（0 / 负数）在存储层就已归一成 `None`（不限制），这里不再兜底。
+    pub fn expired(&self, now_ms: i64) -> bool {
+        self.expires_at.is_some_and(|at| now_ms >= at)
     }
 
     /// 是否限制提供商（界面上「有没有勾」的判据，也用于日志措辞）
