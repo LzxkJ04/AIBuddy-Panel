@@ -1,0 +1,87 @@
+name: docker
+
+# 构建服务端 Docker 镜像并发布到 GHCR（ghcr.io），别人 docker pull 即用。
+#
+# ── 为什么是 GHCR 而不是 Docker Hub ───────────────────────────
+# 上游的 docker.yml 推 Docker Hub 需要仓库 secret（DOCKERHUB_USERNAME /
+# DOCKERHUB_TOKEN），fork 仓库读不到上游 secret，推了必失败，所以删除后改推
+# GHCR：用内置 GITHUB_TOKEN 即可推送，零 secret 配置，公开仓库免费，包页与
+# 仓库互相跳转。
+#
+# ── 触发方式 ──────────────────────────────────────────────────
+#   · 推 v* tag：一次打 tag，桌面安装包（build.yml）与 Docker 镜像同时出；
+#     首次冷构建约 15~25 分钟，后续命中 GHA 层缓存约 5 分钟
+#   · workflow_dispatch：手动补发旧版本镜像（输入版本号，如 2.10.0）
+#
+# ── 首次发布的一次性动作 ──────────────────────────────────────
+# 第一个镜像推上去后，GHCR 包默认是 **private**（免登录拉取会 401），需要在
+# 包设置页改一次 Public：
+#   https://github.com/users/LzxkJ04/packages/container/aibuddy-panel/settings
+# 改完之后所有历史/未来 tag 都自动公开，无需再动。
+#
+# ── 多架构为什么便宜 ─────────────────────────────────────────
+# Dockerfile 的 builder 固定跑原生架构、arm64 走 rustup 交叉编译（不进 QEMU），
+# 所以 platforms 直接写双架构，增量成本只有 arm64 依赖树再编一遍的几分钟。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '镜像版本号（不带 v 前缀，如 2.10.0；会同时打 <版本> / v<版本> / latest 三个 tag）'
+        required: true
+  push:
+    tags:
+      - 'v*'
+
+env:
+  REGISTRY: ghcr.io
+  # GHCR 镜像路径必须全小写（用户名 LzxkJ04 的小写形式 lzxkj04 —— 注意第 5 个
+  # 字母是 j 不是 l，写错 owner 会报 denied: not_found: owner not found）
+  IMAGE: ghcr.io/lzxkj04/aibuddy-panel
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # tag 触发取 GITHUB_REF_NAME（v2.10.0）去 v 前缀；手动触发取输入框。
+      # 版本从 env 走而不内插 ${{ }}，避免把用户输入拼进 shell 命令（注入面）。
+      - name: 计算版本号
+        id: ver
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [ -n "$INPUT_VERSION" ]; then version="$INPUT_VERSION"; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: 安装 buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # arm64 走 Dockerfile 内置的交叉编译路线（不进 QEMU），见文件头注释
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.ver.outputs.version }}
+            ${{ env.IMAGE }}:v${{ steps.ver.outputs.version }}
+            ${{ env.IMAGE }}:latest
+          # 这个 label 让 GHCR 包自动关联本仓库（包页出现仓库入口）
+          labels: |
+            org.opencontainers.image.source=https://github.com/LzxkJ04/AIBuddy-Panel
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
