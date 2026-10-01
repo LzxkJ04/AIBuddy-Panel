@@ -18,7 +18,7 @@
 //! 偏高（webhook 地址是用户手填的），通知系统自己的故障不允许传染主链路。
 //!
 //! ── 发送器：进程级共享一个 reqwest Client（10 秒总超时）──────
-//! 16 种渠道全是出站 HTTP，共用一个带 10 秒超时的 Client（连接池顺带复用）。
+//! 全部渠道都是出站 HTTP，共用一个带 10 秒超时的 Client（连接池顺带复用）。
 //! **不关系统代理探测**（与 `core::egress` 的直连 Client 相反）：通知要发的
 //! Telegram / Discord / ntfy 在部分网络下直连不可达，环境变量代理（HTTPS_PROXY）
 //! 对它们是救命的而不是干扰的 —— 这是有意差异，不要「顺手对齐」。
@@ -54,7 +54,10 @@ pub const KEY_CHANNELS: &str = "notifyChannels";
 /// 配置库（kv）里的键名：告警开关与静默时段
 pub const KEY_ALERTS: &str = "notifyAlerts";
 
-// ── 渠道类型常量（`type` 字段的合法取值，也是 KNOWN_KINDS 的唯一来源）──
+// ── 渠道类型常量（既有 16 种的 `type` 取值）──────────────────────
+// 后续按 Uptime-Kuma notification-providers 全量移植的渠道不再逐个立常量，
+// type 名直接以小写字面量列在 [`KNOWN_KINDS`] 里、与 [`send_channel`] 的
+// match 分支一一对应（命名规则：provider 文件名去连字符转小写）。
 pub const KIND_WEBHOOK: &str = "webhook";
 pub const KIND_WEBHOOK_CUSTOM: &str = "webhook-custom";
 pub const KIND_TELEGRAM: &str = "telegram";
@@ -72,7 +75,10 @@ pub const KIND_TEAMS: &str = "teams";
 pub const KIND_SERVERCHAN: &str = "serverchan";
 pub const KIND_LINE: &str = "line";
 
-/// 全部认识的渠道类型（未在表中的 `type`：分发时记日志跳过、保存时 400）
+/// 全部认识的渠道类型（未在表中的 `type`：分发时记日志跳过、保存时 400）。
+/// 前 16 项对应上方常量；其余为 Uptime-Kuma notification-providers 的全量
+/// 移植（跳过 webpush / apprise / smtp / nostr / aliyun-sms，原因见各自
+/// 实现区段头部的注释）。
 pub const KNOWN_KINDS: &[&str] = &[
     KIND_WEBHOOK,
     KIND_WEBHOOK_CUSTOM,
@@ -90,6 +96,95 @@ pub const KNOWN_KINDS: &[&str] = &[
     KIND_TEAMS,
     KIND_SERVERCHAN,
     KIND_LINE,
+    // ── Uptime-Kuma 全量移植（与 send_channel 的 match 分支一一对应）──
+    "360messenger",
+    "46elks",
+    "alerta",
+    "alertnow",
+    "amootsms",
+    "bearsms",
+    "bitrix24",
+    "brevo",
+    "callmebot",
+    "cellsynt",
+    "clicksendsms",
+    "clickup",
+    "egosms",
+    "evolution",
+    "flashduty",
+    "flowtriq",
+    "fluxer",
+    "freemobile",
+    "goalert",
+    "googlechat",
+    "googlesheets",
+    "gorush",
+    "grafanaoncall",
+    "gtxmessaging",
+    "halopsa",
+    "heiioncall",
+    "homeassistant",
+    "indigo",
+    "jirasm",
+    "keep",
+    "kook",
+    "lunasea",
+    "matrix",
+    "mattermost",
+    "max",
+    "milky",
+    "nextcloudtalk",
+    "notifery",
+    "notifyapp",
+    "octopush",
+    "onebot",
+    "onechat",
+    "onesender",
+    "ooredoo",
+    "openwa",
+    "opsgenie",
+    "pagerduty",
+    "pagertree",
+    "pinglet",
+    "plivo",
+    "promosms",
+    "pumble",
+    "pushdeer",
+    "pushplus",
+    "pushy",
+    "resend",
+    "rocketchat",
+    "sendgrid",
+    "serwersms",
+    "sevenio",
+    "signal",
+    "signalgrid",
+    "signl4",
+    "smsgateway",
+    "smsir",
+    "smsmanager",
+    "smspartner",
+    "smsplanet",
+    "smsc",
+    "smseagle",
+    "splunk",
+    "spugpush",
+    "squadcast",
+    "stackfield",
+    "techuluspush",
+    "telnyx",
+    "teltonika",
+    "threema",
+    "turbosmtp",
+    "twilio",
+    "vk",
+    "vkteams",
+    "waha",
+    "whapi",
+    "wpush",
+    "wxpusher",
+    "yzj",
+    "zohocliq",
 ];
 
 // ── 账号告警的事件种类（`notify_account_event` 的 `kind` 取值）────────
@@ -310,6 +405,153 @@ fn hmac_sha256_base64(secret: &str, message: &str) -> Result<String, String> {
         .map_err(|error| format!("钉钉加签密钥无效: {error}"))?;
     mac.update(message.as_bytes());
     Ok(base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes()))
+}
+
+// ─── Uptime-Kuma 全量移植共用的助手（下面的新 provider 用）────────
+
+/// HMAC-SHA256 → 小写十六进制（Nextcloud Talk 机器人的签名头用）
+fn hmac_sha256_hex(secret: &str, message: &str) -> Result<String, String> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .map_err(|error| format!("Nextcloud Talk 密钥无效: {error}"))?;
+    mac.update(message.as_bytes());
+    Ok(mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+/// 读一个「标量」字段：字符串去空白直接用；数字转十进制串 —— 群号 / 手机号 /
+/// 模板 ID 这类字段用户在 JSON 配置里可能填成数字（与 [`cfg_string`] 的差别
+/// 只在数字上；既有 16 种渠道继续走原助手，行为不变）
+fn cfg_scalar(config: &Value, key: &str) -> String {
+    match config.get(key) {
+        Some(Value::String(text)) => text.trim().to_string(),
+        Some(Value::Number(number)) => number.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// 依次尝试多个键名取第一个非空标量（新 provider 版的 [`cfg_first`]）
+fn cfg_first_scalar(config: &Value, keys: &[&str]) -> String {
+    for key in keys {
+        let value = cfg_scalar(config, key);
+        if !value.is_empty() {
+            return value;
+        }
+    }
+    String::new()
+}
+
+/// 必填标量字段：按候选键取，全空则报可读错误（新 provider 版的 [`require_field`]）
+fn require_scalar(config: &Value, keys: &[&str], kind: &str, field: &str) -> Result<String, String> {
+    let value = cfg_first_scalar(config, keys);
+    if value.is_empty() {
+        return Err(format!("{kind} 渠道缺少必填配置: {field}"));
+    }
+    Ok(value)
+}
+
+/// 从 JSON 对象里取一个字段的文本（字符串直接用，其它类型 JSON 序列化；
+/// 缺失 / 类型不对 → 空串）—— 用于拼接远端返回的业务错误信息
+fn json_text(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .map(|item| match item {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        })
+        .unwrap_or_default()
+}
+
+/// 去掉全部非 ASCII 字符：多家 SMS 网关只收 GSM-7 / ASCII 文本（照 Uptime-Kuma
+/// 源码的 `msg.replace(/[^\x00-\x7F]/g, "")`）
+fn ascii_only(text: &str) -> String {
+    text.chars().filter(|character| character.is_ascii()).collect()
+}
+
+/// 按逗号 / 分号 / 空白拆出非空的收件人列表（多家 SMS / 群发渠道的收件人
+/// 字段都是「分隔符串」，源码各自用正则拆，这里统一一份）
+fn split_recipients(text: &str) -> Vec<String> {
+    text.split([',', ';', ' ', '\t', '\r', '\n'])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// 带前缀的凭证头（`Bearer x` / `Bot x` / `GenieKey x` / `Key x` …）。
+/// 同 [`header_value`]：token 是用户手填的，非法字符先拦下，避免
+/// `RequestBuilder::header` 对非法头值 panic
+fn schemed_header(scheme: &str, token: &str) -> Option<reqwest::header::HeaderValue> {
+    header_value(&format!("{scheme} {token}"))
+}
+
+/// 当前 UTC 时间的 RFC3339 字符串（HaloPSA / GoogleSheets 等要 ISO 时间戳）
+fn iso_now() -> String {
+    chrono::Utc::now()
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// 德黑兰当前时间 `YYYY-MM-DD HH:MM:SS`（AmootSMS 接口按伊朗时间收
+/// SendDateTime；伊朗自 2022 年取消夏令时，固定 +03:30）
+fn tehran_now() -> String {
+    match chrono::FixedOffset::east_opt(3 * 3600 + 30 * 60) {
+        Some(offset) => chrono::Utc::now()
+            .with_timezone(&offset)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+        // 常数偏移不会失败，这里兜底成 UTC 只为不写 expect
+        None => chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+    }
+}
+
+/// 从用户填的 URL 里取 origin（`scheme://host[:port]`）—— Teltonika 的登录
+/// 与发信端点都挂在 origin 下，用户多填的路径一律忽略
+fn url_origin(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{authority}"))
+}
+
+/// 一个伪随机的非负 int32（VK 的 random_id 防重放参数）：纳秒时钟取模
+fn random_id_i32() -> i64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.subsec_nanos() as i64 ^ (duration.as_secs() as i64).wrapping_mul(1_000_000_007))
+        .unwrap_or(0);
+    nanos.rem_euclid(2_147_483_647)
+}
+
+/// 追加一个查询参数到 URL（已有 `?` 用 `&` 否则用 `?`；值走百分号编码）。
+/// 用于 CallMeBot 这类「端点已自带鉴权参数、只能往里追加」的渠道
+fn with_query(url: &str, key: &str, value: &str) -> String {
+    let separator = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{separator}{key}={}", percent_encode(value))
+}
+
+/// 发送并返回 2xx 响应正文（HTTP 层校验与 [`send`] 相同；响应体里带业务
+/// 成败字段的渠道 —— SMS 网关普遍如此 —— 用它拿正文再做业务校验）
+async fn send_and_read(request: reqwest::RequestBuilder) -> Result<String, String> {
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("请求失败: {error}"))?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("远端返回 {status}: {}", truncate_text(&text, 200)));
+    }
+    Ok(text)
+}
+
+/// 解析响应 JSON（失败给 `None`，调用方按「业务校验失败」报错）
+fn parse_json(text: &str) -> Option<Value> {
+    serde_json::from_str(text).ok()
 }
 
 /// 截断错误文案里的响应正文（远端 500 的 HTML 不该整页进日志）

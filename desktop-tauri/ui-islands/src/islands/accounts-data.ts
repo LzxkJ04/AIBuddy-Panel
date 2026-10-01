@@ -464,7 +464,10 @@ function checkinOutcomeOf(row: Record<string, unknown> | undefined): CheckinOutc
   if (!claim) return { kind: 'failed', reason: '签到响应为空' }
   if (claim.success === true) return { kind: 'ok', reason: '' }
   if (claim.alreadyCompleted === true) return { kind: 'already', reason: '' }
-  return { kind: 'failed', reason: String(claim.msg || '未领取') }
+  const msg = String(claim.msg || '')
+  // 上游对重复签到回 HTTP 400/409 + msg 含「已签到」——正常状态不算失败
+  if (msg.includes('已签到')) return { kind: 'already', reason: msg }
+  return { kind: 'failed', reason: msg || '未领取' }
 }
 
 /**
@@ -561,6 +564,14 @@ export async function runCheckin(id: string): Promise<void> {
     void shared().wbApp?.refresh?.()
   } catch (error) {
     const message = errorMessage(error)
+    // 上游对重复签到回 HTTP 400/409 + msg 含「已签到」—— 正常状态不算失败
+    if (message.includes('已签到')) {
+      checkinErrors.delete(id)
+      toast(`${label}：今日已签到`)
+      bump()
+      void refreshUsageAfterCheckin(id)
+      return
+    }
     checkinErrors.set(id, message)
     bump()
     toast(`签到失败：${label}：${message}`, 'err')

@@ -558,8 +558,10 @@ export type NotifyFieldSpec = {
   /** 字段说明（表单里渲染在输入框下方） */
   hint: string
   placeholder?: string
-  /** 密钥类字段：卡片摘要与测试文案里打码，不回显全文 */
+  /** 密钥类字段：卡片摘要与测试文案里打码，表单里用密码框显示（可点「显示」临时明文核对） */
   secret?: boolean
+  /** 数字输入（端口 / 优先级 / 时长等）：渲染 number 输入框，值仍按字符串存取 */
+  number?: boolean
   /** 多行文本（自定义模板 / 请求头 JSON） */
   multiline?: boolean
   rows?: number
@@ -581,11 +583,21 @@ export type NotifyTypeSpec = {
 }
 
 /**
- * 16 种渠道类型与各自的 config 字段表。
+ * 渠道类型与各自的 config 字段表（全量对齐 Uptime-Kuma 的 notification-providers）。
  *
  * 键名与后端的渠道配置逐字对齐（webhook 的 url、telegram 的 botToken / chatId …）；
  * 说明文案按「是什么 / 到哪里拿 / 填什么形态」写，新用户不看文档也能填对。
- * 顺序 = 添加渠道下拉里的顺序：通用 Webhook 在前，IM 机器人居中，专用推送服务殿后。
+ * 顺序 = 添加渠道下拉里的顺序：原有 16 种在前（通用 Webhook 在前、IM 机器人居中、
+ * 专用推送服务殿后，结构保持不动），后面按「IM 群聊 → WhatsApp/消息网关 → 推送 →
+ * 事件与值班 → 邮件 → 短信语音 → 其它集成」分组追加 Uptime-Kuma 的其余类型。
+ *
+ * 新类型的 type 值 = refs/uptime-kuma/server/notification-providers/ 的文件名去掉
+ * .js 后转小写（与后端代理同一份命名规则），config 键名与各 provider 的
+ * send(notification, …) 逐字一致 —— 后端按这份表取值，改一处必须两处同步。
+ *
+ * 字段渲染口径（settings-page 的 ChannelFieldRow）：secret 出密码框（可临时明文）、
+ * number 出数字框、multiline 出多行文本、其余为单行文本；源码里的下拉与复选框
+ * 一律按文本框出，可选值写进说明（值本身是字符串，后端按需解析）。
  */
 export const NOTIFY_TYPES: NotifyTypeSpec[] = [
   {

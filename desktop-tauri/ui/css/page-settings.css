@@ -78,19 +78,36 @@
    同特异性、本文件在其后加载，ring 被压掉 —— 补回来，键盘切分类时才有焦点指示。 */
 .settings-nav-item:focus-visible { box-shadow: var(--ring); }
 
-/* 分类图标槽：尺寸与主侧栏的 .nav-item .ico 一致（17px 盒、currentColor，
-   选中态自动变主题色；svg 撑满盒子）。间距用 margin 而不是 gap —— 老浏览器之外
-   没差别，但这里与 .nav-item 的写法保持一致，两处对照着读更容易。 */
+/* 分类图标槽：图标包进一枚浅紫圆角小方块（--primary-soft 底 + --r-xs 圆角），
+   每个分类在卡片里有「徽标」的存在感。图标本身是官方 Lucide 线性图形，
+   stroke currentColor：未选中时描边取 --primary-fg（与 --primary-soft 是
+   同一套对比保证，深浅主题都不糊，主题色切换跟着 prefs.js 走）。
+   方块从 17px 撑到 24px（17px 图标 + 3.5px 呼吸位），条目的 padding /
+   外距 / 文字全部不动 —— 间距仍用 margin-right 而不是 gap，与主侧栏
+   .nav-item 的写法保持一致，两处对照着读更容易。 */
 .settings-nav-item .ico {
   flex: 0 0 auto;
-  width: 17px;
-  height: 17px;
+  width: 24px;
+  height: 24px;
   display: grid;
   place-items: center;
   margin-right: 7px;
+  border-radius: var(--r-xs);
+  background: var(--primary-soft);
+  color: var(--primary-fg);
+  transition: background .15s ease, color .15s ease;
 }
 
 .settings-nav-item .ico svg { display: block; }
+
+/* 选中态：整个条目已是主色软底，图标方块再升一档 —— 变主色实底、图标翻白，
+   选中的分类一眼锁定（不必再写 .active:hover：除这条外没有别的规则碰 .ico）。
+   白的取法与 button.primary 同一套 color-mix（纯 #fff 在深色主题下过亮，
+   掺 8% --surface 后两套主题都柔和），跟随主题而不是写死。 */
+.settings-nav-item.active .ico {
+  background: var(--primary);
+  color: color-mix(in srgb, var(--surface) 8%, white);
+}
 
 /* hover：抬升 1px + 主色软描边（--primary-bd 跟随 prefs.js 的主题色切换），
    投影加深一档配合「浮起来」的手感。带 :not(:disabled) 是为了压过

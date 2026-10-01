@@ -307,6 +307,16 @@ impl BillingService {
                         .or_else(|| value.get("message").and_then(Value::as_str))
                 })
                 .unwrap_or("");
+            // 「今天已签到」是正常状态不是错误：上游对重复签到回 HTTP 400/409 +
+            // msg 含「已签到」——归一成 success:false + 友好文案（前端按 warn 展示），
+            // 不让它以「计费接口返回 HTTP 400」的失败形态冒出去
+            if (response.status == 400 || response.status == 409) && detail.contains("已签到") {
+                return Ok(json!({
+                    "success": false,
+                    "code": -1,
+                    "msg": "今日已签到，请明天再来",
+                }));
+            }
             let message = if detail.is_empty() {
                 format!("计费接口返回 HTTP {}", response.status)
             } else {
