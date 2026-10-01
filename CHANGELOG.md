@@ -22,7 +22,7 @@
 - 登录页主面板与文档页完整视觉改版（AIBuddy Panel 品牌、紫罗兰主题、深浅色与跟随系统三套配色同步替换）。
 - index.html 补 viewport meta（移动端基础适配；完整移动端布局是后续目标）。
 - 桌面端品牌更名：安装包名（AIBuddy Panel_2.10.0_x64-setup.exe）、窗口标题、发行者与版权信息全部改为 AIBuddy Panel / LzxkJ04（旧产品名仅保留在迁移探测清单里，用于识别上游安装）。
-- Docker 镜像随 GitHub Release 一并发布（`aibuddy-panel-<版本>-docker.tar.gz`，`docker load` 即用），服务器无需本地构建；镜像同时发布到 GHCR，免下载直接 `docker pull ghcr.io/lzxkj04/aibuddy-panel:v2.10.0`（首次发布需在包设置页手动改 Public，此后每个版本自动公开）。
+- Docker 镜像随 GitHub Release 一并发布（`aibuddy-panel-<版本>-docker.tar.gz`，`docker load` 即用），服务器无需本地构建；镜像同时发布到 GHCR，免下载直接 `docker pull ghcr.io/lzxkj04/aibuddy-panel:v2.10.0`（Actions 从公开仓库推送时包自动公开；若发现匿名拉取 401 再去包设置页手动改 Public）。
 
 ## 2.9.0
 
