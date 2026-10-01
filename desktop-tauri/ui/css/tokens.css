@@ -105,7 +105,7 @@
   --ring: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent);
 
   /* 尺寸 */
-  --sidebar-w: 216px;
+  --sidebar-w: 220px;
   --topbar-h: 50px;
   /* 自定义标题栏高度（桌面端）：主窗口去掉了系统装饰（src-tauri 建窗处
      decorations(false)），界面自绘 32px 标题条补上三键与拖动区（titlebar.js）。
@@ -129,7 +129,7 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
 
-  --bg: oklch(0 0 0);
+  --bg: oklch(0.235 0 0);
   --surface: oklch(0.19212 0.00399 286.02);
   --surface-2: oklch(0.28254 0.00726 285.93);
   --surface-3: oklch(0.32737 0.01050 285.81);

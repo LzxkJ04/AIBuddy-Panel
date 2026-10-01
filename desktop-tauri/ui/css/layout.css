@@ -201,6 +201,7 @@ body.has-titlebar .shell {
 @media (max-width: 900px) { .nav-group-label { display: none; } }
 
 .nav-item {
+  min-height: 48px;
   position: relative;
   display: flex;
   align-items: center;
