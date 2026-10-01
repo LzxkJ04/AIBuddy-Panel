@@ -14,6 +14,22 @@
 - 参考内容：List Models 响应形状（`{object:"list", data:[{id,object:"model",created,owned_by}]}`，导出 JSON 的格式依据）、chat/completions 与 responses 协议、`Authorization: Bearer` 鉴权头、usage 用量对象
 - 用在：模型清单导出、Key 快速接入卡、网关健康面板（/v1/models 探活口径）
 
+## 1.5 Buddy2API 一族（同赛道软件，功能合并的直接来源）
+
+用户提供的同赛道软件 **Buddy2API**（Windows 单文件版，127.0.0.1:8787）正在做功能合并，其文章页（ima.qq.com/note/share/_A0ZNLKK8AmeKpoRal5uOw，作者「阿虚」）声明的**代码参考**如下——全部开源，可读源码搬功能：
+
+| 仓库 | 说明 |
+|---|---|
+| https://github.com/wicm84266964/Buddy2api | Buddy2API 本体（Go 多提供商网关，v2.1.13） |
+| https://github.com/wangliangdong/loomy2api | 讯飞 Loomy → API |
+| https://github.com/linguo2625469/workbuddy2api-panel | WorkBuddy 管理面板（面板功能参照） |
+| https://github.com/ardeyouxipianyi/workbuddy2api-hub | WorkBuddy Hub（聚合参照） |
+| https://github.com/cyz824/WorkBuddyCheckin | WorkBuddy 独立签到工具（定时签到参照） |
+| https://github.com/88lin/workbuddy-auto-signin | WorkBuddy 自动签到脚本（签到排期参照） |
+| https://github.com/aimod-cc/agent2api | **本项目上游**（已在 §1） |
+
+文章声明的功能设计参考：阿虚的分享文（把 Workbuddy/小浣熊/Qoder/千问办公/Loomy/CatPaw 的内置额度转成本地 OpenAI 兼容 API 供任意 Agent 使用的思路与推广文案）。提供商代号对照：qclaw=讯飞系、qwenwork=千问办公、traework=TraeWork、loomy=讯飞 Loomy、raccoon=商汤小浣熊。
+
 ## 2. 渠道与计费体系（后续路线的主要参照）
 
 ### songquanpeng/one-api
