@@ -159,14 +159,14 @@ fn describe_error(value: &Value) -> String {
 
 /// 配置目录：与后端共用 `~/.agent2api`（可用环境变量覆盖）。
 ///
-/// 实现已随网关本体迁到独立 crate（`agent2api_server::paths::config_dir`，
+/// 实现已随网关本体迁到独立 crate（`aibuddy_panel_server::paths::config_dir`，
 /// 唯一实现），本函数保留为转发 —— 壳侧调用点不必感知 crate 边界，
 /// 「壳读 key」与「服务端读写数据」仍永远指向同一个目录。
 ///
 /// 环境变量：`AGENT2API_PROXY_HOME` 优先，旧名 `WORKBUDDY_PROXY_HOME` 兼容读
 /// （1.x 的启动脚本/快捷方式里可能还留着旧名）。
 pub fn config_dir() -> PathBuf {
-    agent2api_server::paths::config_dir()
+    aibuddy_panel_server::paths::config_dir()
 }
 
 /// 读取本地 API Key。仅在本机内存里取；未配置时返回 None。

@@ -36,8 +36,8 @@ mod update;
 // 网关本体与端口冲突分类已拆到独立 crate（`server/`，桌面与 headless 二进制
 // 共用）。在这里以原名引入：crate 内所有 `crate::server::…` /
 // `crate::port_conflict::…` 路径与拆分前完全一致，两侧代码零改动。
-use agent2api_server::port_conflict;
-use agent2api_server::server;
+use aibuddy_panel_server::port_conflict;
+use aibuddy_panel_server::server;
 
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::MacosLauncher;

@@ -3,7 +3,7 @@
 # ── 为什么只构建 server crate ────────────────────────────────
 # 仓库里有两个 crate：桌面端（tauri，Linux 下要 webkit2gtk 一整套系统库）
 # 与网关本体（server/，无 GUI 依赖）。容器里只需要网关本体 ——
-# `cargo build -p agent2api-server` 明确只编它。
+# `cargo build -p aibuddy-panel-server` 明确只编它。
 #
 # ── 多架构：交叉编译而不是 QEMU ─────────────────────────────
 # builder 固定跑在构建机的原生架构（$BUILDPLATFORM）：buildx 构建 arm64
@@ -47,16 +47,16 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
     CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
     CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
 
-# 统一构建脚本：amd64 原生 / arm64 交叉，产物统一归位到 /build/agent2api-server
+# 统一构建脚本：amd64 原生 / arm64 交叉，产物统一归位到 /build/aibuddy-panel-server
 #（COPY --from 无法条件分支，所以在这里收拢路径）
 RUN { echo '#!/bin/sh -e'; \
       echo 'cd /build/src-tauri'; \
       echo 'if [ "$TARGETARCH" = "arm64" ]; then'; \
-      echo '  cargo build --release -p agent2api-server --target aarch64-unknown-linux-gnu --target-dir /build/target'; \
-      echo '  cp /build/target/aarch64-unknown-linux-gnu/release/agent2api-server /build/agent2api-server'; \
+      echo '  cargo build --release -p aibuddy-panel-server --target aarch64-unknown-linux-gnu --target-dir /build/target'; \
+      echo '  cp /build/target/aarch64-unknown-linux-gnu/release/aibuddy-panel-server /build/aibuddy-panel-server'; \
       echo 'else'; \
-      echo '  cargo build --release -p agent2api-server --target-dir /build/target'; \
-      echo '  cp /build/target/release/agent2api-server /build/agent2api-server'; \
+      echo '  cargo build --release -p aibuddy-panel-server --target-dir /build/target'; \
+      echo '  cp /build/target/release/aibuddy-panel-server /build/aibuddy-panel-server'; \
       echo 'fi'; \
     } > /build/cargo-build.sh && chmod +x /build/cargo-build.sh
 
@@ -64,7 +64,7 @@ COPY desktop-tauri/src-tauri/Cargo.toml desktop-tauri/src-tauri/Cargo.lock src-t
 COPY desktop-tauri/src-tauri/server/Cargo.toml src-tauri/server/
 RUN mkdir -p src-tauri/server/src/bin src-tauri/src \
     && echo "" > src-tauri/server/src/lib.rs \
-    && echo "fn main() {}" > src-tauri/server/src/bin/agent2api-server.rs \
+    && echo "fn main() {}" > src-tauri/server/src/bin/aibuddy-panel-server.rs \
     && echo "" > src-tauri/src/lib.rs \
     && echo "fn main() {}" > src-tauri/src/main.rs
 # 桩依赖层：整棵依赖树编一遍，命中后成为之后每次构建的缓存底座
@@ -83,7 +83,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/agent2api-server /usr/local/bin/agent2api-server
+COPY --from=builder /build/aibuddy-panel-server /usr/local/bin/aibuddy-panel-server
 COPY desktop-tauri/ui /app/ui
 
 # 容器内的默认形态：全网卡监听 + 数据落卷 + 自托管面板。
@@ -99,4 +99,4 @@ EXPOSE 3065
 WORKDIR /app
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${AGENT2API_PROXY_PORT:-3065}/health" || exit 1
-ENTRYPOINT ["/usr/local/bin/agent2api-server"]
+ENTRYPOINT ["/usr/local/bin/aibuddy-panel-server"]

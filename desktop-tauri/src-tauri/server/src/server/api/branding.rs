@@ -61,21 +61,26 @@ fn write_branding(patch: &Value) -> Result<(), String> {
     let logo = patch.get("logo").cloned().unwrap_or(current["logo"].clone());
     let merged = json!({ "title": title, "logo": logo });
     let empty = merged["title"].is_null() && merged["logo"].is_null();
-    db.with_mut(|conn| {
-        if empty {
-            conn.execute(
-                "DELETE FROM kv WHERE key = ?1",
-                rusqlite::params![KV_BRANDING_KEY],
-            )
-        } else {
-            conn.execute(
-                "INSERT INTO kv (key, value) VALUES (?1, ?2)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                rusqlite::params![KV_BRANDING_KEY, merged.to_string()],
-            )
-        }
-    })
-    .ok_or_else(|| "写入品牌设置失败".to_string())?;
+    // with_mut 返回 Option<rusqlite::Result<usize>>：None = 库未挂载，Err = SQL 失败，
+    // 两层都要消费掉（漏掉内层 Result 就是编译警告 unused_must_use）
+    let changed = db
+        .with_mut(|conn| {
+            if empty {
+                conn.execute(
+                    "DELETE FROM kv WHERE key = ?1",
+                    rusqlite::params![KV_BRANDING_KEY],
+                )
+            } else {
+                conn.execute(
+                    "INSERT INTO kv (key, value) VALUES (?1, ?2)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    rusqlite::params![KV_BRANDING_KEY, merged.to_string()],
+                )
+            }
+        })
+        .ok_or_else(|| "写入品牌设置失败：数据库不可用".to_string())?
+        .map_err(|error| format!("写入品牌设置失败: {error}"))?;
+    let _ = changed;
     Ok(())
 }
 

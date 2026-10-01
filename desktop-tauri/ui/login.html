@@ -1,11 +1,66 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AIBuddy Panel · 登录</title>
   <!-- 组件库产物（ui-kit + Tailwind，由 ui-islands 构建）：与主面板同一份。
        页面外壳的取值也改走它的 --ui-* 令牌，不再自己硬编码一套深色变量。 -->
+  <link rel="icon" href="brand/favicon.ico">
+  <script>
+      // 登录页主题：与主面板共用 aibuddy-prefs / 主题偏好，跟随用户上次选择
+      (function () {
+        var theme = 'dark';
+        try {
+          var prefs = JSON.parse(localStorage.getItem('aibuddy-prefs') || '{}');
+          theme = prefs.theme || localStorage.getItem('workbuddy-desktop-theme') || 'dark';
+        } catch (e) {}
+        if (theme === 'system') {
+          theme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+        document.addEventListener('DOMContentLoaded', function () {
+          var btn = document.getElementById('login-theme-toggle');
+          if (!btn) return;
+          var moon = '🌙', sun = '☀️';
+          var sync = function () {
+            var t = document.documentElement.getAttribute('data-theme');
+            btn.textContent = t === 'dark' ? sun : moon;
+            btn.title = t === 'dark' ? '切换到浅色' : '切换到深色';
+          };
+          btn.addEventListener('click', function () {
+            var t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', t);
+            try {
+              var prefs = JSON.parse(localStorage.getItem('aibuddy-prefs') || '{}');
+              prefs.theme = t; localStorage.setItem('aibuddy-prefs', JSON.stringify(prefs));
+              localStorage.setItem('workbuddy-desktop-theme', t);
+            } catch (e) {}
+            sync();
+          });
+          sync();
+          // 品牌区：把岛的方形图标换成横版品牌 logo
+          setTimeout(function () {
+            var svg = document.querySelector('#login-app svg[role="img"]');
+            if (!svg) return;
+            var wrap = document.createElement('div');
+            wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:8px';
+            var img = document.createElement('img');
+            img.src = 'brand/logo-horizontal.svg';
+            img.alt = 'AIBuddy Panel';
+            img.style.cssText = 'height:52px;width:auto';
+            var tag = document.createElement('div');
+            tag.textContent = 'OpenAI 兼容网关 · 管理面板';
+            tag.style.cssText = 'font-size:12.5px;color:var(--ui-muted-foreground,#9aa)';
+            wrap.appendChild(img); wrap.appendChild(tag);
+            svg.replaceWith(wrap);
+            var h1 = document.querySelector('#login-app h1');
+            var sub = h1 ? h1.nextElementSibling : null;
+            if (h1 && sub) { h1.remove(); sub.remove(); }
+          }, 60);
+        });
+      })();
+    </script>
   <link rel="stylesheet" href="islands/ui.css">
   <style>
     /* 样式表里只留 html/body 与第三方 widget 的样式：卡片、品牌区、表单都由 React 岛
@@ -59,6 +114,7 @@
        一起加载；岛直接渲染卡片本身，不在这里写静态骨架）。
        这个 <script> 必须排在 #login-app 之后、且不能加 defer/async：下面那段登录脚本
        要同步拿到岛渲染出来的 #username / #password / #submit / #error / #mode-tip。 -->
+  <button id="login-theme-toggle" title="切换主题" style="position:fixed;top:16px;right:18px;z-index:50;width:36px;height:36px;border-radius:10px;border:1px solid var(--ui-border,transparent);background:var(--ui-surface,transparent);color:var(--ui-foreground);cursor:pointer;font-size:15px">🌙</button>
   <div id="login-app"></div>
   <script src="islands/ui.js"></script>
 

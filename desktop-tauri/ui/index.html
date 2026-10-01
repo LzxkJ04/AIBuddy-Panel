@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="brand/favicon.ico">
   <title>AIBuddy Panel · 多提供商 AI 网关</title>
   <script>
     // 与主题持久化配合：在 CSS 解析前先贴上 data-theme，避免深色模式首屏闪烁
@@ -24,6 +25,8 @@
     })();
   </script>
   <link rel="stylesheet" href="css/tokens.css">
+  <style>.pref-hamburger{display:none!important}</style>
+  <link rel="stylesheet" href="css/prefs.css">
   <link rel="stylesheet" href="css/layout.css">
   <link rel="stylesheet" href="css/components.css">
   <link rel="stylesheet" href="css/page-accounts.css">
@@ -527,5 +530,6 @@
   <!-- 数据结构升级弹窗：启动时问一次 /api/upgrade，有待迁移数据就弹。
        排在最后：它的 refreshPanels() 要调各面板的 load()，那些都得先挂好 -->
   <script src="upgrade-panel.js"></script>
+  <script src="js/prefs.js"></script>
 </body>
 </html>

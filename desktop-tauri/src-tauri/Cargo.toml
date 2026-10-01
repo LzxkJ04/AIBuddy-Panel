@@ -1,6 +1,6 @@
 [package]
 name = "workbuddy-proxy-desktop"
-version = "2.10.0"
+version = "2.11.0"
 description = "Agent2API 桌面端 — 多提供商本地网关与会话管理"
 authors = ["aimod-cc"]
 edition = "2021"
@@ -13,8 +13,8 @@ rust-version = "1.88"
 # 根 README「许可」一节也写明两者共同构成完整的授权与使用约定。
 # 因此不单独声明 SPDX 的 "MIT"（会漏掉附加限制），改为指向实际的 LICENSE 文件。
 license-file = "../../LICENSE"
-repository = "https://github.com/aimod-cc/agent2api"
-homepage = "https://github.com/aimod-cc/agent2api"
+repository = "https://github.com/LzxkJ04/AIBuddy-Panel"
+homepage = "https://github.com/LzxkJ04/AIBuddy-Panel"
 
 # ── workspace ───────────────────────────────────────────────
 # 网关本体拆成了独立 crate（`server/`，桌面与 headless 二进制共用）。
@@ -33,8 +33,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # 网关本体（独立 crate）：桌面壳进程内跑它的 HTTP 服务器，
-# headless 二进制（agent2api-server）也链接同一个 lib
-agent2api-server = { path = "server" }
+# headless 二进制（aibuddy-panel-server）也链接同一个 lib
+aibuddy-panel-server = { path = "server" }
 # tray-icon 提供系统托盘，image-png 用于解析 bundle 图标（托盘图标直接复用它，不新增图片资源）
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
