@@ -33,7 +33,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use agent2api_server::server::{config, logging, start, ServerState};
+use aibuddy_panel_server::server::{config, logging, start, ServerState};
 
 fn main() -> ExitCode {
     // 端口口径与桌面壳一致：新名 > 旧名 > 默认（非法值当未设置）
@@ -88,7 +88,7 @@ fn main() -> ExitCode {
     // 先注册，见 access::panel_gate 与 http::require_api_key 的注释）。
     // 唯一的关闭口在下面的安全闸门里：AGENT2API_ALLOW_NO_KEY=1 是「我自己
     // 要全放行」的显式声明，闸门不得拦它。
-    agent2api_server::server::access::set_panel_gate(true);
+    aibuddy_panel_server::server::access::set_panel_gate(true);
     if let Some(p) = panel_port {
         logging::log(
             "[Server]",
@@ -99,10 +99,10 @@ fn main() -> ExitCode {
     }
 
     // 面板访问控制的库句柄与刷新令牌载入（注册 / 双令牌落盘都走它）
-    agent2api_server::server::access::attach_db(state.db().cloned());
-    agent2api_server::server::access::load_refresh_tokens();
+    aibuddy_panel_server::server::access::attach_db(state.db().cloned());
+    aibuddy_panel_server::server::access::load_refresh_tokens();
     // env 预置的管理员同步进库（明文在此前已转哈希，库里只存哈希）
-    agent2api_server::server::access::sync_env_admin_to_store();
+    aibuddy_panel_server::server::access::sync_env_admin_to_store();
 
     // ── 安全闸门：/v1/* 的 fail-closed 与注册提示 ───────────────
     // 桌面形态的安全边界是「只监听 127.0.0.1」，免鉴权语义（一把 Key 都
@@ -123,14 +123,14 @@ fn main() -> ExitCode {
     {
         // 裸跑是「我自己要全放行」的显式声明：面板闸门必须让路，
         // 否则 /api/* 会被未注册闸门挡住，与声明自相矛盾
-        agent2api_server::server::access::set_panel_gate(false);
+        aibuddy_panel_server::server::access::set_panel_gate(false);
         logging::log(
             "[Security]",
             "⚠️  AGENT2API_ALLOW_NO_KEY=1：未配置 API Key，网关对所有来源完全开放",
         );
     } else {
-        agent2api_server::server::access::set_v1_fail_closed(true);
-        if agent2api_server::server::access::panel_auth_enabled() {
+        aibuddy_panel_server::server::access::set_v1_fail_closed(true);
+        if aibuddy_panel_server::server::access::panel_auth_enabled() {
             logging::log(
                 "[Security]",
                 "尚未配置 API Key：登录面板后在「网关 Key」页创建第一把，/v1/* 在此之前拒绝服务",

@@ -67,7 +67,7 @@ pub async fn handle(State(state): State<ServerState>) -> Response {
         "transport": "upstream-api",
         "product": "AIBuddy Panel",
         "version": env!("CARGO_PKG_VERSION"),
-        "uptimeSeconds": (crate::server::api::health_uptime_seconds()) as i64,
+        "uptimeSeconds": (health_uptime_seconds()) as i64,
         "upstreamConfigured": healthy,
         "upstreamBaseUrl": summary.get("baseUrl").cloned().unwrap_or(Value::Null),
         "authApiBase": summary.get("authApiBase").cloned().unwrap_or(Value::Null),
