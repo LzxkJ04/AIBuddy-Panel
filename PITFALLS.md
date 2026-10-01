@@ -29,6 +29,13 @@
 - 容器只绑 `127.0.0.1:3065`，公网走 nginx + Let's Encrypt（certbot webroot，站点目录就是 webroot）。
 - `source/` 有 nginx 404 规则，不对外暴露。
 
+## GHCR 镜像发布
+
+- 镜像发布渠道：**ghcr.io/lzxkj04/aibuddy-panel**（tags：`<版本>` / `v<版本>` / `latest`，amd64 + arm64 双架构）。发布由 `.github/workflows/docker.yml` 承担：推 `v*` tag 自动构建，`workflow_dispatch` 可对旧版本补发（输入版本号）。**不要手动往 GHCR 推镜像**，一切走 CI。
+- **镜像 owner 写错的报错极隐晦**：GHCR 路径必须全小写，且 owner 必须与用户名完全对应——用户名 `LzxkJ04` 的小写是 `lzxk j 04`（第 5 个字母是 j），写成 `lzxkl04` 会报 `denied: not_found: owner not found`（编译全部正常、只在 push 阶段失败），别往权限/密钥方向排查。
+- **Actions 推的包默认就公开**：GITHUB_TOKEN 从公开仓库推送、镜像带 `org.opencontainers.image.source` label 关联仓库时，包自动 public，匿名可 `docker pull`（2026-10-01 实测）。若哪天发现匿名拉取 401/404，去包设置页（仓库 Packages 页 → 包 → Package settings → Danger Zone）手动改 Public——GitHub 没有改可见性的 API，只能网页操作。
+- VM 宿主机没装 curl：容器内验证用 `docker exec <容器> curl ...`（镜像内自带 curl），宿主机直接 curl 会 127。
+
 ## 面板行为
 
 - 管理员由 compose 环境变量预置（`AGENT2API_ADMIN_USER/PASSWORD`），启动时覆盖写库；登录还要过 **ALTCHA 人机验证**（脚本登录需解题：sha256(salt+num)==challenge）。
