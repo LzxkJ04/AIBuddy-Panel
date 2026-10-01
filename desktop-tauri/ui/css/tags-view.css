@@ -140,3 +140,35 @@
     transition: none;
   }
 }
+
+/* ── 页签右键菜单 ── */
+.tags-ctx-menu {
+  position: fixed; z-index: 1100; min-width: 140px;
+  padding: 5px;
+  background: var(--surface-raised, var(--surface));
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  box-shadow: var(--shadow-2);
+  animation: tagsCtxIn .12s ease;
+}
+@keyframes tagsCtxIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+.tags-ctx-item {
+  padding: 7px 12px; border-radius: var(--r-xs);
+  font-size: 12.5px; color: var(--text-2); cursor: pointer;
+}
+.tags-ctx-item:hover { background: var(--primary-soft); color: var(--primary-fg); }
+.tags-ctx-item.danger { color: var(--danger); }
+.tags-ctx-item.danger:hover { background: var(--danger-soft); color: var(--danger); }
+
+/* ── 内容全屏（右键「当前页全屏」）：只留内容区 ── */
+body.pref-content-max .sidebar,
+body.pref-content-max .topbar,
+body.pref-content-max .tags-view { display: none !important; }
+body.pref-content-max .shell { display: block; }
+body.pref-content-max .main,
+body.pref-content-max .content,
+body.pref-content-max .content-inner {
+  height: 100vh;
+  max-height: none;
+  padding: 0;
+  max-width: none;
+}

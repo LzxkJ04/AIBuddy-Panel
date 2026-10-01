@@ -105,6 +105,7 @@
 
     // 事件委托：页签重建（整表重建式重绘）不用逐个绑
     root.addEventListener('click', onRootClick);
+    root.addEventListener('contextmenu', onRootContextmenu);
     root.addEventListener('keydown', onRootKeydown);
     return true;
   }
@@ -216,6 +217,73 @@
     render();
     if (current !== HOME) go(HOME);
   }
+
+  /* ── 右键菜单（vue-next-admin 式：刷新 / 关闭当前 / 关闭其它 / 全部关闭）── */
+  var ctxMenu = null;
+  function closeCtxMenu() {
+    if (ctxMenu) { ctxMenu.remove(); ctxMenu = null; }
+  }
+  function openCtxMenu(page, x, y) {
+    closeCtxMenu();
+    ctxMenu = document.createElement('div');
+    ctxMenu.className = 'tags-ctx-menu';
+    var items = [];
+    if (page === current) items.push(['refresh', '刷新']);
+    items.push(['maximize', document.body.classList.contains('pref-content-max') ? '退出内容全屏' : '当前页全屏']);
+    if (page !== HOME) {
+      items.push(['close', '关闭当前']);
+      items.push(['others', '关闭其它']);
+    }
+    items.push(['all', '全部关闭']);
+    items.forEach(function (it) {
+      var mi = document.createElement('div');
+      mi.className = 'tags-ctx-item' + (it[0] === 'all' ? ' danger' : '');
+      mi.textContent = it[1];
+      mi.addEventListener('click', function () {
+        closeCtxMenu();
+        if (it[0] === 'refresh') {
+          // 重进当前页：各页的 showPage 会重新拉数据
+          go(page);
+        } else if (it[0] === 'maximize') {
+          toggleContentMax();
+        } else if (it[0] === 'close') {
+          close(page);
+        } else if (it[0] === 'others') {
+          tags = tags.filter(function (t) { return t === page || t === HOME; });
+          if (tags.indexOf(page) === -1) tags.unshift(page);
+          persist(); render();
+        } else {
+          closeAll();
+        }
+      });
+      ctxMenu.appendChild(mi);
+    });
+    ctxMenu.style.left = Math.min(x, window.innerWidth - 150) + 'px';
+    ctxMenu.style.top = Math.min(y, window.innerHeight - items.length * 36 - 16) + 'px';
+    document.body.appendChild(ctxMenu);
+  }
+  /** 内容区全屏：藏侧栏 / 顶栏 / 页签栏，Esc 或再触发一次退出 */
+  function toggleContentMax() {
+    var on = document.body.classList.toggle('pref-content-max');
+    try { localStorage.setItem('aibuddy-content-max', on ? '1' : '0'); } catch (e) {}
+  }
+  (function restoreContentMax() {
+    try { if (localStorage.getItem('aibuddy-content-max') === '1') document.body.classList.add('pref-content-max'); } catch (e) {}
+  })();
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && document.body.classList.contains('pref-content-max')) toggleContentMax();
+  });
+
+  function onRootContextmenu(event) {
+    var tag = event.target.closest && event.target.closest('.tag');
+    if (!tag) return;
+    event.preventDefault();
+    openCtxMenu(tag.dataset.page, event.clientX, event.clientY);
+  }
+  document.addEventListener('click', function (e) {
+    if (ctxMenu && !ctxMenu.contains(e.target)) closeCtxMenu();
+  });
+  window.addEventListener('blur', closeCtxMenu);
 
   /* ── 事件 ─────────────────────────────────── */
 

@@ -655,7 +655,7 @@ body.has-titlebar .shell {
 /* 品牌区版本号（prefs.js 填充，读取 /api/update/status 的 currentVersion） */
 .brand-version {
   margin-top: 1px;
-  font-size: 10.5px;
+  font-size: 10px;
   line-height: 1.2;
   color: var(--sidebar-muted);
   font-family: var(--font-mono);

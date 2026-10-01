@@ -1,13 +1,17 @@
 /* ─────────────────────────────────────────────
    AIBuddy Panel · 偏好设置系统（照 vue-next-admin 偏好抽屉复刻）
-   右侧抽屉 · 三个页签：
-     外观  主题三卡（真 SVG 图标）/ 深色侧栏 / 深色顶栏 / 灰色模式 / 色弱模式 /
-           12 色主题板（圆点 + 名称）/ 自定义主题色
-     布局  布局模式四卡（迷你布局示意图，当前仅「垂直」可用）/ 内容宽度
-     通用  动态标题 / 页面切换进度条 / 页面切换动画（无·淡入·滑入）/ 水印
+   右侧抽屉 · 四个页签：
+     外观  主题三卡（真 SVG 图标）/ 深色侧栏 / 深色顶栏 / 顶栏渐变 /
+           灰色模式 / 色弱模式 / 12 色主题板（圆点 + 名称）/ 自定义主题色
+     布局  布局模式四卡（迷你布局示意图）/ 内容宽度 /
+           侧栏（Logo 显示 / 选中菜单高亮条 / 折叠时隐藏分组标题）
+     通用  动态标题 / 页面切换进度条 / 面包屑 / 页脚版权 /
+           页面切换动画（无·淡入·滑入）/ 水印
+     锁屏  锁屏开关 / 锁屏密码 / 自动锁屏分钟数 / 立即锁屏
    页脚  复制偏好 / 导入偏好 / 恢复默认
    附带：顶栏快捷按钮（自愈）、Ctrl+K 快速跳页、切页进度条、欢迎横幅、
-         canvas 平铺水印、页面切换动画驱动。
+         canvas 平铺水印、页面切换动画驱动、
+         锁屏遮罩（Ctrl+L / 抽屉按钮 / 空闲自动锁屏，状态持久化）。
    全部持久化在 localStorage（aibuddy-prefs），刷新即生效。
    ───────────────────────────────────────────── */
 
@@ -27,7 +31,14 @@
     layout: 'vertical',       // 布局模式：当前只有 vertical 真实生效
     filter: '',               // 灰色 / 色弱滤镜：'' | gray | weak（互斥）
     watermark: false,         // 平铺水印
-    pageAnim: 'none'          // 页面切换动画：none | fade | slide
+    pageAnim: 'none',         // 页面切换动画：none | fade | slide
+    isBreadcrumb: true,       // 顶栏面包屑（vue-next-admin isBreadcrumb）
+    isFooter: false,          // 内容区底部版权页脚（vue-next-admin isFooter）
+    isShowLogo: true,         // 侧栏 Logo（vue-next-admin isShowLogo）
+    isGroupLabel: true,       // 开=折叠时隐藏分组标题；关=折叠/抽屉模式也显示
+    topbarGradient: false,    // 顶栏渐变背景（vue-next-admin isTopBarColorGradual）
+    menuHighlight: false,     // 选中菜单左侧主色竖条（vue-next-admin 菜单高亮形态）
+    lockScreen: null          // 占位：sanitize 一律重建为 {enabled,password,minutes}
   };
   function sanitize(p) {
     // 越界值一律拉回合法档位，防止脏数据把界面锁死
@@ -42,6 +53,21 @@
     p.progressbar = !!p.progressbar;
     p.watermark = !!p.watermark;
     if (typeof p.primary !== 'string') p.primary = '';
+    // 新键：缺省按「关/默认开」补齐，旧 localStorage 数据加载后自动有默认值
+    p.isBreadcrumb = (p.isBreadcrumb === undefined || p.isBreadcrumb === null) ? true : !!p.isBreadcrumb;
+    p.isFooter = !!p.isFooter;
+    p.isShowLogo = (p.isShowLogo === undefined || p.isShowLogo === null) ? true : !!p.isShowLogo;
+    p.isGroupLabel = (p.isGroupLabel === undefined || p.isGroupLabel === null) ? true : !!p.isGroupLabel;
+    p.topbarGradient = !!p.topbarGradient;
+    p.menuHighlight = !!p.menuHighlight;
+    // lockScreen 单独重建（旧数据可能是任意脏值，且避免与 DEFAULTS 共用引用）
+    var ls = (p.lockScreen && typeof p.lockScreen === 'object') ? p.lockScreen : {};
+    var mins = Math.floor(Number(ls.minutes));
+    p.lockScreen = {
+      enabled: !!ls.enabled,
+      password: typeof ls.password === 'string' ? ls.password : '',
+      minutes: (isFinite(mins) && mins > 0) ? Math.min(mins, 1440) : 0 // 0 = 不自动锁屏
+    };
     return p;
   }
   function load() {
@@ -133,6 +159,12 @@
     root.setAttribute('data-pref-layout', prefs.layout);
     root.setAttribute('data-pref-filter', prefs.filter || '');
     root.setAttribute('data-pref-anim', prefs.pageAnim || 'none');
+    // vue-next-admin 界面显示项：面包屑 / Logo / 分组标题 / 顶栏渐变 / 菜单高亮条
+    root.setAttribute('data-pref-crumb', prefs.isBreadcrumb ? 'on' : 'off');
+    root.setAttribute('data-pref-logo', prefs.isShowLogo ? 'on' : 'off');
+    root.setAttribute('data-pref-grouplabel', prefs.isGroupLabel ? 'on' : 'off');
+    root.setAttribute('data-pref-topbar-grad', prefs.topbarGradient ? 'on' : 'off');
+    root.setAttribute('data-pref-navhl', prefs.menuHighlight ? 'on' : 'off');
     if (prefs.primary) {
       var c = prefs.primary;
       root.style.setProperty('--primary', c);
@@ -158,9 +190,158 @@
         : window.__aibuddyTitleBase.brand;
     }
     applyWatermark();
+    ensureFooter();
+    syncLockScreen();
     try { syncThemeBtnRef(); } catch (e) {}
     document.dispatchEvent(new CustomEvent('aibuddy-prefs-changed', { detail: prefs }));
   }
+
+  /* ── 页脚版权（vue-next-admin isFooter）：主内容区底部固定一行 ── */
+  function ensureFooter() {
+    var old = document.getElementById('pref-footer');
+    if (!prefs.isFooter) { if (old && old.parentNode) old.parentNode.removeChild(old); return; }
+    var host = document.querySelector('.content-inner');
+    if (!host) return;
+    var brand = 'AIBuddy Panel';
+    var h1 = document.querySelector('.brand-text h1');
+    if (h1 && h1.textContent.trim()) brand = h1.textContent.trim();
+    var f = old || el('div', 'pref-footer');
+    f.id = 'pref-footer';
+    f.textContent = '© ' + new Date().getFullYear() + ' ' + brand + ' · 基于 agent2api';
+    if (!old) host.appendChild(f);
+  }
+
+  /* ── 锁屏（vue-next-admin isLockScreen 形态）──
+     Ctrl+L / 抽屉「立即锁屏」按钮立即锁屏；开启后空闲达到设定分钟数自动锁屏；
+     锁屏状态持久化在 aibuddy-lockscreen-active（刷新仍在锁屏），解锁即清除。 */
+  var LOCK_KEY = 'aibuddy-lockscreen-active';
+  var lockEl = null, lockTimeEl = null, lockDateEl = null, lockErrEl = null;
+  var lockClockTimer = null, idleTimer = null, lastIdleReset = 0;
+
+  function isLocked() { return !!(lockEl && lockEl.parentNode); }
+
+  function pad2(n) { return String(n).padStart(2, '0'); }
+  function tickLockClock() {
+    if (!lockTimeEl || !lockDateEl) return;
+    var d = new Date();
+    lockTimeEl.textContent = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    lockDateEl.textContent = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+
+  function buildLockOverlay() {
+    var mask = el('div', 'pref-lock');
+    mask.id = 'pref-lockscreen';
+    var clock = el('div', 'pref-lock-clock');
+    lockTimeEl = el('div', 'pref-lock-time');
+    lockDateEl = el('div', 'pref-lock-date');
+    clock.appendChild(lockTimeEl);
+    clock.appendChild(lockDateEl);
+    var box = el('div', 'pref-lock-box');
+    var pw = prefs.lockScreen ? prefs.lockScreen.password : '';
+    if (pw) {
+      var hint = el('div', 'pref-lock-hint');
+      hint.textContent = '屏幕已锁定，输入密码解锁';
+      var r = el('div', 'pref-lock-row');
+      var inp = el('input');
+      inp.type = 'password';
+      inp.placeholder = '锁屏密码';
+      inp.autocomplete = 'off';
+      var btn = el('button', 'pref-lock-btn');
+      btn.type = 'button';
+      btn.textContent = '解锁';
+      var doTry = function () { tryUnlock(inp.value); };
+      btn.addEventListener('click', doTry);
+      inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); doTry(); } });
+      r.appendChild(inp);
+      r.appendChild(btn);
+      lockErrEl = el('div', 'pref-lock-err');
+      box.appendChild(hint);
+      box.appendChild(r);
+      box.appendChild(lockErrEl);
+      setTimeout(function () { try { inp.focus(); } catch (e2) {} }, 30);
+    } else {
+      var hint2 = el('div', 'pref-lock-hint');
+      hint2.textContent = '未设置密码，点击直接解锁';
+      var btn2 = el('button', 'pref-lock-btn wide');
+      btn2.type = 'button';
+      btn2.textContent = '点击解锁';
+      btn2.addEventListener('click', function () { tryUnlock(''); });
+      box.appendChild(hint2);
+      box.appendChild(btn2);
+      lockErrEl = null;
+    }
+    mask.appendChild(clock);
+    mask.appendChild(box);
+    return mask;
+  }
+
+  function lockNow(persist) {
+    if (isLocked()) return;
+    lockEl = buildLockOverlay();
+    document.body.appendChild(lockEl);
+    if (persist !== false) { try { localStorage.setItem(LOCK_KEY, '1'); } catch (e) {} }
+    tickLockClock();
+    if (lockClockTimer) clearInterval(lockClockTimer);
+    lockClockTimer = setInterval(tickLockClock, 1000);
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  }
+
+  function unlock() {
+    if (lockEl && lockEl.parentNode) lockEl.parentNode.removeChild(lockEl);
+    lockEl = null; lockTimeEl = null; lockDateEl = null; lockErrEl = null;
+    if (lockClockTimer) { clearInterval(lockClockTimer); lockClockTimer = null; }
+    try { localStorage.removeItem(LOCK_KEY); } catch (e) {}
+    restartIdleTimer();
+  }
+
+  function tryUnlock(value) {
+    var pw = prefs.lockScreen ? prefs.lockScreen.password : '';
+    if (pw && value !== pw) {
+      if (lockErrEl) lockErrEl.textContent = '密码不正确，请重试';
+      if (lockEl) {
+        lockEl.classList.remove('shake');
+        void lockEl.offsetWidth; // 强制重排，让抖动动画能重新播放
+        lockEl.classList.add('shake');
+      }
+      return false;
+    }
+    unlock();
+    return true;
+  }
+
+  function restartIdleTimer() {
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+    if (isLocked()) return;
+    if (!(prefs.lockScreen && prefs.lockScreen.enabled)) return;
+    var mins = prefs.lockScreen.minutes;
+    if (!mins || mins <= 0) return;
+    idleTimer = setTimeout(function () { lockNow(); }, mins * 60 * 1000);
+  }
+
+  function syncLockScreen() {
+    var flag = false;
+    try { flag = localStorage.getItem(LOCK_KEY) === '1'; } catch (e) {}
+    if (flag && !isLocked()) lockNow(false); // 刷新后恢复锁屏态（已持久化，不重复写）
+    restartIdleTimer();
+  }
+
+  /* 立即锁屏快捷键：开启锁屏后才接管 Ctrl+L */
+  document.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'l' || e.key === 'L')) {
+      if (!(prefs.lockScreen && prefs.lockScreen.enabled)) return;
+      e.preventDefault();
+      lockNow();
+    }
+  });
+  /* 空闲侦测：鼠标 / 键盘活动重置自动锁屏计时（10s 节流，避免高频重排计时器） */
+  ['mousemove', 'mousedown', 'keydown', 'wheel', 'touchstart'].forEach(function (ev) {
+    document.addEventListener(ev, function () {
+      var now = Date.now();
+      if (now - lastIdleReset < 10000) return;
+      lastIdleReset = now;
+      restartIdleTimer();
+    });
+  });
 
   /* ── 平铺水印：canvas 生成半透明文字瓦片，fixed 全屏不挡交互 ── */
   function applyWatermark() {
@@ -279,6 +460,7 @@
     ['requests', '请求日志'], ['logs', '日志'], ['tasks', '定时任务'], ['settings', '设置']
   ];
   function openSearchDialog() {
+    if (isLocked()) return; // 锁屏时快捷键与按钮都失效
     if (document.getElementById('pref-search-mask')) return;
     var mask = el('div', 'pref-mask');
     mask.id = 'pref-search-mask';
@@ -337,6 +519,7 @@
   }
   document.addEventListener('keydown', function (e) {
     if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+      if (isLocked()) return; // 锁屏时屏蔽快捷跳页
       e.preventDefault(); openSearchDialog();
     }
   });
@@ -355,6 +538,7 @@
       '<button type="button" data-tab="look" class="on">外观</button>' +
       '<button type="button" data-tab="layout">布局</button>' +
       '<button type="button" data-tab="general">通用</button>' +
+      '<button type="button" data-tab="lock">锁屏</button>' +
       '</div>' +
       '<div class="pref-body"></div>' +
       '<div class="pref-foot">' +
@@ -449,6 +633,9 @@
           function (v) { prefs.darkSidebar = v; save(prefs); apply(); }), '仅把侧边栏换成深色，内容区跟随当前主题'));
         body.appendChild(row('深色顶栏', toggle(function () { return prefs.darkTopbar; },
           function (v) { prefs.darkTopbar = v; save(prefs); apply(); }), '仅把顶栏换成深色，内容区跟随当前主题'));
+        body.appendChild(row('顶栏渐变', toggle(function () { return prefs.topbarGradient; },
+          function (v) { prefs.topbarGradient = v; save(prefs); apply(); }),
+          '顶栏背景改为「主色 → 紫蓝」横向渐变，浅色 / 深色主题下都协调'));
         // 灰色 / 色弱两个滤镜互斥：开一个自动关另一个
         var swGray = toggle(function () { return prefs.filter === 'gray'; },
           function (v) { prefs.filter = v ? 'gray' : ''; save(prefs); apply(); });
@@ -542,6 +729,16 @@
           });
         body.appendChild(wc);
         body.appendChild(hint('两种宽度都实时预览，右上角齿轮里随时切换。'));
+        body.appendChild(section('侧栏'));
+        body.appendChild(row('显示 Logo', toggle(function () { return prefs.isShowLogo; },
+          function (v) { prefs.isShowLogo = v; save(prefs); apply(); }),
+          '关闭后隐藏侧栏顶部的圆形 Logo，品牌文字保留'));
+        body.appendChild(row('选中菜单高亮条', toggle(function () { return prefs.menuHighlight; },
+          function (v) { prefs.menuHighlight = v; save(prefs); apply(); }),
+          '当前菜单项左侧额外显示一条主色竖条指示'));
+        body.appendChild(row('折叠时隐藏分组标题', toggle(function () { return prefs.isGroupLabel; },
+          function (v) { prefs.isGroupLabel = v; save(prefs); apply(); }),
+          '关闭后，侧栏折叠 / 手机抽屉模式也显示「运行状态」等分组标题'));
       }
       if (tabName === 'general') {
         body.appendChild(section('浏览体验'));
@@ -550,6 +747,13 @@
           '把当前页面名写进标签页标题（如「报表 · AIBuddy Panel」）'));
         body.appendChild(row('页面切换进度条', toggle(function () { return prefs.progressbar; },
           function (v) { prefs.progressbar = v; save(prefs); apply(); }), '切换页面时顶部显示细进度条'));
+        body.appendChild(section('界面显示'));
+        body.appendChild(row('面包屑', toggle(function () { return prefs.isBreadcrumb; },
+          function (v) { prefs.isBreadcrumb = v; save(prefs); apply(); }),
+          '顶栏显示当前页面位置（如「首页 / 报表」）；手机窄屏下始终隐藏'));
+        body.appendChild(row('页脚版权', toggle(function () { return prefs.isFooter; },
+          function (v) { prefs.isFooter = v; save(prefs); apply(); }),
+          '在内容区底部显示固定版权行「© 2026 AIBuddy Panel · 基于 agent2api」'));
         body.appendChild(section('页面切换动画'));
         var seg = el('div', 'pref-seg');
         [['none', '无'], ['fade', '淡入'], ['slide', '滑入']].forEach(function (o) {

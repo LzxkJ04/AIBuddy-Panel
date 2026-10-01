@@ -415,3 +415,18 @@ html[data-pref-anim="slide"] .page.active { animation: prefPageSlide .3s cubic-b
   .pref-drawer { width: 100vw; max-width: none; }
   .retention-list { grid-template-columns: 1fr; }
 }
+
+/* ── 显示修复：压过全局 button 固定高度（components.css 的 30px）与 span 行高 ── */
+.pref-drawer .pref-theme-card {
+  height: auto !important;
+  min-height: 64px;
+  padding: 14px 8px 12px;
+}
+.pref-drawer .pref-theme-card .ico { height: 26px; }
+.pref-drawer .pref-palette-item .dot {
+  display: inline-block !important;
+  width: 24px !important;
+  height: 24px !important;
+  line-height: 1 !important;
+}
+.pref-drawer .pref-palette-item .name { line-height: 1.2 !important; }
