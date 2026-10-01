@@ -444,6 +444,12 @@ pub fn panel_router(state: ServerState) -> Router {
         )
         .route("/api/keys", get(api::keys_api::list_keys).post(api::keys_api::create_key))
         .route("/api/keys/{id}", patch(api::keys_api::update_key).delete(api::keys_api::delete_key))
+        // ── Codex CLI 一键接入（网关 Key 页「快速接入」弹窗）──
+        // status 读 ~/.codex 现状、setup 写 config.toml / auth.json（已有文件
+        // 先备份 .bak，apiKey 明文落盘），见 api::codex_api 的模块头。挂
+        // protected：写的是另一个本机应用的客户端配置，与 /api/keys 同级敏感。
+        .route("/api/codex/status", get(api::codex_api::get_status))
+        .route("/api/codex/setup", post(api::codex_api::post_setup))
         // ── 出站指纹脱敏开关 ──
         // 与 /api/debug 同形的单开关端点（GET 读 / PUT 写），挂 protected：
         // 它决定出站请求体要不要剥离审核指纹，敏感度与调试模式同级。

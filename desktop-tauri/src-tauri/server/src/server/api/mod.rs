@@ -29,6 +29,8 @@
 //!   zcode_captcha.rs GET/POST /api/zcode/captcha（活动套餐通道的人机验证令牌池：
 //!                 界面静默铸造后推入，转发层按请求取用）
 //!   upgrade_api.rs GET /api/upgrade、POST /api/upgrade/run（旧数据 → SQLite 库）
+//!   codex_api.rs  GET /api/codex/status、POST /api/codex/setup（Codex CLI 一键接入：
+//!                 写 ~/.codex 的 config.toml / auth.json，已有文件先备份 .bak）
 //!
 //! 管理 API 已全部就位（切片 1-6）。stats_api 是统计报表任务新增的唯一模块
 //! （切片 7 之后的路由扩展），照同样的分工：新文件 + `http::router` 里登记，
@@ -50,6 +52,9 @@ pub mod backup_api;
 pub mod captcha;
 pub mod chat;
 pub mod codearts_welfare;
+// Codex CLI 一键接入（写 ~/.codex 的 config.toml / auth.json；已有文件先备份
+// .bak，语义与安全边界见该文件模块头）
+pub mod codex_api;
 pub mod config_api;
 // 自定义提供商的管理接口（新建时顺带创建首个账号；存储与账号接入见
 // `core::custom_providers` 与 `core::account_store::custom_accounts`）
@@ -83,6 +88,7 @@ pub mod retry_api;
 pub mod sanitize;
 pub mod scheduled_tasks;
 pub mod session;
+pub mod shutdown_api;
 pub mod sessions_api;
 pub mod stats_api;
 pub mod storage_api;

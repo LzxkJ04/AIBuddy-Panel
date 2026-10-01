@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { createPortal } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import {
   Badge, Button, InputGroup, InputGroupAddon, InputGroupInput,
@@ -8,6 +9,8 @@ import {
 } from '@ui'
 import {
   CLIENT_PAGE_SIZES,
+  DEFAULT_PAGE_SIZE,
+  SERVER_PAGE_SIZES,
   TableFooter,
   readPageSize,
   writePageSize,
@@ -52,6 +55,17 @@ import {
  * 也不再留 `#logs-range` 那个挂载点）、分页栏 → 通用表格页脚（islands/table-shell.tsx：
  * 读数 / 每页条数 / 跳页 / 翻页器五张表一套，边界判断与读数收在组件里）。
  *
+ * ── 审计视图（GET /api/audit）──────────────────────────────
+ * 面板头部的分段控件在「系统事件」（本面板的原视图）与「审计」之间切换。审计是**服务端真分页**
+ * （limit/offset 由后端执行，与请求日志同口径，没有「全部」档），数据来自 /api/audit —— 后端把
+ * 敏感操作落进既有事件日志（消息形如 `[Audit] <event>: <detail>`），这个入口只筛出审计条目。
+ * 桥接层没有它的具名方法，而本岛的改动约定只落在这一个 tsx 文件里，所以走 `__TAURI_INTERNALS__`
+ * 直连 `api_request`（添加账号弹窗的同款做法；网页端 shim 也装了同名对象，两端通用）。
+ * 两个视图都常挂、用 display:none 收起不可见的那个：切换不丢滚动位置与页码，也免得来回重挂。
+ * 401（未登录 / 会话过期）不按错误处理：清成空列表 + 一句「登录后可查看审计日志」，且全程不
+ * toast —— 轮询在场，弹了就是轰炸。事件名按点分前缀着色（panel=主色、apikey=橙、account=绿、
+ * session=紫），软底 / 描边 / 深字全取 tokens 的语义色族，深浅主题自动跟随。
+ *
  * ── 坑：带 Tailwind display 工具类的元素上 hidden 无效 ─────────
  * 组件库的工具类是**分层 + !important** 的，tokens.css 的 `[hidden] { display:none !important }`
  * 未分层；按 Cascade 5，important 的层序反转 —— 分层压过未分层。所以组件库控件上的显隐一律用
@@ -85,6 +99,26 @@ type LogQueryResult = {
  */
 type LogStats = { lastId?: number; total?: number; byLevel?: Record<string, number> } | null
 
+/**
+ * GET /api/audit 的一条（后端 logs_store::LogEntry，序列化字段与 /api/logs 的条目同形）。
+ * message 的落库形态是 `[Audit] <event>: <detail>`（见 audit_api::audit），展示前按前缀拆开。
+ */
+type AuditEntry = { id?: number; ts?: number; level?: string; category?: string; message?: string }
+
+/** GET /api/audit 的 data：桥接层（直连同款）已拆掉 {success,data} 信封，拿到就是这一层 */
+type AuditResult = {
+  entries?: AuditEntry[]; total?: number; limit?: number; offset?: number; max?: number
+}
+
+/** 审计视图的一次读数：loginRequired 单独标记 401（提示登录而不是报错）；error 是其它失败的落屏文案 */
+type AuditData = {
+  entries: AuditEntry[]; total: number; loaded: boolean
+  loginRequired: boolean; error: string
+}
+
+/** 壳的原始 IPC 形状（与 add-account-bridge.ts 的直连同款） */
+type TauriInternals = { invoke?: (command: string, args: unknown) => Promise<unknown> }
+
 /** /api/scheduled-tasks 里的一条（本面板只关心 logsAutoRefresh 这条的形状） */
 type IntervalTask = { id?: string; enabled?: boolean; interval?: number; unit?: string }
 
@@ -111,6 +145,11 @@ type LogsBridge = {
  */
 type SharedWindow = {
   workbuddyDesktop?: LogsBridge
+  /**
+   * 壳的原始 IPC：审计接口（GET /api/audit）在桥里没有具名方法，只能直连
+   * （与添加账号弹窗的 postAccount 同一条路；网页端 shim 也装了同名对象，两端通用）。
+   */
+  __TAURI_INTERNALS__?: TauriInternals
   wbApp?: {
     toast?: (message: string, kind?: 'err' | 'ok') => void
     /** 未读徽标（只提示 error）：传 stats，由 app.js 自己算未读条数 */
@@ -195,6 +234,30 @@ const RANGE_OPTIONS: readonly SegmentedControlOption<string>[] = RANGES.map(valu
   value, label: RANGE_OPTION_LABEL[value],
 }))
 
+/** 面板头部的视图切换：'events' = 系统事件（原视图），'audit' = 审计 */
+type ViewKind = 'events' | 'audit'
+
+/**
+ * 视图切换的分段档位（面板头部，与既有列表视图并列）。选项提在模块级：SegmentedControl
+ * 每拿到新数组都要重新量滑块位置，常量能省掉这轮测量。
+ */
+const VIEW_OPTIONS: readonly SegmentedControlOption<ViewKind>[] = [
+  { value: 'events', label: '系统事件' },
+  { value: 'audit', label: '审计' },
+]
+
+/** 审计视图的每页档位：服务端真分页（limit/offset 由后端执行），没有「全部」那一档 */
+const AUDIT_PAGE_SIZES = SERVER_PAGE_SIZES
+
+/** 审计视图顶部的说明行（原文照需求） */
+const AUDIT_INTRO_TEXT = '审计日志记录敏感操作（登录 / Key 增删 / 账号启停 / 备份导入等）'
+
+/** 审计条目落库的消息前缀（audit_api 的 `[Audit] `，含尾随空格）——展示前剥掉 */
+const AUDIT_MESSAGE_PREFIX = '[Audit] '
+
+/** 视图切换的持久化键（与时间档位同一套 localStorage 口径） */
+const VIEW_KEY = 'workbuddy-desktop-logs-view'
+
 /** 最低级别下拉的选项（与旧实现 index.html 里那四个 option 逐字一致） */
 const LEVEL_OPTIONS: readonly { value: string; label: string }[] = [
   { value: '', label: '全部级别' },
@@ -275,6 +338,85 @@ const LOG_LEVEL_CHIPS_CSS = `
 .log-chip.on.error:hover:not(:disabled) { background: var(--danger-soft); border-color: var(--danger-bd); }
 `
 
+/**
+ * 审计视图的样式（<style> 随 AuditView 渲染一次，规则全部圈在 .logs-view-body /
+ * .audit-* 名下）。为什么内嵌而不是进 page-logs.css：与级别 chips 同一约定 —— 本岛的改动
+ * 只落在这一个 tsx 文件里。颜色全部取 tokens.css 的语义变量，深浅主题自动跟随。
+ *
+ * .logs-view-body 是两个视图共用的「视图体」包装：.panel-body 的 flex 高度分配
+ * （列表吃掉剩余高度、滚动只在列表里）原本直接作用于 .log-list，中间插了这层包装后
+ * 由它原样继承（flex:1 + min-height:0 + 列方向 + 12px 间距与 .panel-body 同值），
+ * 不可见的视图用内联 display:none 收起（内联样式没有分层 !important 的坑）。
+ *
+ * 事件名徽章走「软底 + 描边 + 深字」三件套，与级别 chips 同款：软底 / 描边用 tokens 的
+ * -soft / -bd（tokens.css 自带深浅两套，浅色掺白、深色直接给透明度 —— 正是「tokens
+ * 透明度软底」的现成载体）。panel=主色、apikey=橙（--warn）、account=绿（--ok）、
+ * session=紫（--intl，全站唯一的紫色系 token 族）；未知前缀保持中性。
+ */
+const AUDIT_CSS = `
+.logs-view-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.audit-intro {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+/* 全局的 .spacer 规则圈在 .panel-foot 名下（layout.css），说明行里这枚要自己给弹性 */
+.audit-intro .spacer { flex: 1 1 auto; }
+.audit-intro-text { color: var(--text-3); font-size: 11.5px; }
+.audit-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--hairline);
+  flex: none;
+}
+.audit-row:last-child { border-bottom: none; }
+.audit-row:hover { background: var(--row-hover); }
+.audit-time {
+  padding-top: 3px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.audit-ev {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.audit-ev.panel { color: var(--primary-fg); background: var(--primary-soft); border-color: var(--primary-bd); }
+.audit-ev.apikey { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-bd); }
+.audit-ev.account { color: var(--ok); background: var(--ok-soft); border-color: var(--ok-bd); }
+.audit-ev.session { color: var(--intl); background: var(--intl-soft); border-color: var(--intl-bd); }
+.audit-detail {
+  padding-top: 2px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+`
+
 /* ─── 模块级状态（跨渲染的守卫、缓存与入口登记）────── */
 
 /**
@@ -303,6 +445,12 @@ let polling = false
 let panelBusy = false
 /** 最近一次统计（app.js 的 clearLogsBadge 读它推进已读水位） */
 let lastStatsValue: LogStats = null
+
+/**
+ * 审计请求的序号：审计视图没有互斥锁，翻页 / 轮询推的信号 / 手动刷新可能叠在一起，
+ * 只认最后一次发出的响应（与请求日志的 token 同一口径），乱序落地的直接丢弃。
+ */
+let auditSeq = 0
 
 /** 组件挂载后登记的入口：契约方法都经它转发（挂载前只有 showCategory / render 需补发） */
 type PanelHandle = {
@@ -372,6 +520,90 @@ function persistRange(value: string): void {
   } catch {
     // 存储不可用只影响下次打开，不影响本次会话内的表现
   }
+}
+
+/* ─── 视图切换与审计：纯函数 ───────────────────── */
+
+/** 只有存过 'audit' 才恢复审计视图；无值 / 存储不可用 / 值被改坏一律回落系统事件 */
+function readView(): ViewKind {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'audit' ? 'audit' : 'events'
+  } catch {
+    return 'events'
+  }
+}
+
+function persistView(value: ViewKind): void {
+  try {
+    localStorage.setItem(VIEW_KEY, value)
+  } catch {
+    // 存储不可用只影响下次打开
+  }
+}
+
+/**
+ * PageSizeChoice 收成数字（审计的档位全是数字，'all' 只是类型上的可能；真出现时按
+ * 默认档算 —— 与 table-shell 的 fallback 同一兜底）。
+ */
+function numericSize(size: PageSizeChoice): number {
+  return size === 'all' ? DEFAULT_PAGE_SIZE : size
+}
+
+/**
+ * 把落库消息拆成事件名与详情：`[Audit] panel.login: 密码登录成功` →
+ * { event: 'panel.login', detail: '密码登录成功' }。后端 detail 里也可能含「: 」，
+ * 取**第一处**切分（事件名是点分标识，本身不含冒号）。没有 detail（audit(event, '')
+ * 的落库形态就是裸事件名）时 detail 为空串。
+ */
+function splitAuditMessage(message?: string): { event: string; detail: string } {
+  const raw = message ?? ''
+  const text = raw.startsWith(AUDIT_MESSAGE_PREFIX) ? raw.slice(AUDIT_MESSAGE_PREFIX.length) : raw
+  const cut = text.indexOf(': ')
+  if (cut <= 0) return { event: text, detail: '' }
+  return { event: text.slice(0, cut), detail: text.slice(cut + 2) }
+}
+
+/**
+ * 事件名的着色类名（见 AUDIT_CSS 的 .audit-ev.*）：按点分前缀着色，panel=主色、
+ * apikey=橙（--warn）、account=绿（--ok）、session=紫（--intl）；未知前缀返回空串
+ * = 中性配色（与级别 chips 的 tone 同一表达）。
+ */
+function auditToneOf(event: string): string {
+  const prefix = event.split('.')[0] ?? ''
+  return prefix === 'panel' || prefix === 'apikey' || prefix === 'account' || prefix === 'session' ? prefix : ''
+}
+
+/** 时刻（HH:mm:ss）：审计按「最近发生」看，日期悬停标题里给全（formatLogTime） */
+function formatClock(ts?: number): string {
+  if (!ts) return '—'
+  const d = new Date(ts)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+/**
+ * 401 的各种落法：面板未登录（「请先登录管理面板」/ panel_login_required）、Key 鉴权
+ * 失败（Unauthorized / invalid_api_key）、反向代理的非 JSON 401（壳侧只剩 HTTP 401）。
+ * 命中就静默清成空列表 + 登录提示，不按错误处理 —— 见 AuditView 的 loadAudit。
+ */
+function isAuthError(message: string): boolean {
+  return /请先登录|panel_login_required|invalid_api_key|Unauthorized|HTTP 401|\b401\b/.test(message)
+}
+
+/**
+ * GET /api/audit（直连 api_request：桥里没有这个具名方法，且本岛的改动约定只落在这一个
+ * tsx 文件里）。返回的是拆掉信封后的 data；401 / 其它非 2xx 会被归一成 rejection
+ * （rejection 值可能是裸字符串 —— 桌面端没走桥的 asError，见 add-account-bridge 的说明）。
+ */
+async function callAudit(query: string): Promise<AuditResult | null> {
+  const internals = shared().__TAURI_INTERNALS__
+  if (!internals || typeof internals.invoke !== 'function') {
+    throw new Error('桌面运行时不可用（Tauri 未初始化）')
+  }
+  const result = await internals.invoke('api_request', {
+    request: { method: 'GET', path: `/api/audit${query}` },
+  })
+  return (result ?? null) as AuditResult | null
 }
 
 /** 取某个时刻的本地零点毫秒值 */
@@ -644,6 +876,186 @@ function LevelChip(props: {
   )
 }
 
+/* ─── 审计视图 ───────────────────────────────── */
+
+const EMPTY_AUDIT: AuditData = { entries: [], total: 0, loaded: false, loginRequired: false, error: '' }
+
+/**
+ * 审计日志视图：GET /api/audit 的条目流（服务端 limit/offset 真分页）。
+ *
+ * 常挂不卸（父组件用 display:none 收起）：切换视图不丢页码与读数，回来也少一次请求。
+ * 拉取时机只有四个——首次激活、翻页 / 换档位、父组件推来的 reloadSignal（自动刷新轮询
+ * 与对外契约 load() 在本视图可见时推）、说明行右侧的「刷新」。失败一律落屏 / 静默，
+ * **全程不 toast**：本视图挂出期间轮询每个刷新周期都会拉一次，弹了就是轰炸；401 单独
+ * 识别成「登录后可查看审计日志」的空态。
+ *
+ * 页脚经 portal 渲染进父组件给的 host：页脚必须是 .panel 的直接子节点（页 CSS 按
+ * 「头 / 体 / 脚」分配高度），而分页状态在这里 —— host 由父组件在审计视图可见时挂载，
+ * 没挂上（还在系统事件视图）就不渲染页脚，本视图此刻也是收起的，无感。
+ */
+function AuditView(props: {
+  active: boolean
+  reloadSignal: number
+  /** 页脚的宿主元素（.panel 的直接子节点，父组件持引用）：null = 还没轮到本视图 */
+  footerHost: HTMLDivElement | null
+}) {
+  const [data, setData] = React.useState<AuditData>(EMPTY_AUDIT)
+  const [page, setPage] = React.useState(1)
+  const [size, setSize] = React.useState<PageSizeChoice>(() => readPageSize('audit', AUDIT_PAGE_SIZES))
+  const [loading, setLoading] = React.useState(false)
+  /** 手动刷新计数（说明行右侧那颗「刷新」）：与 reloadSignal 走同一条拉取路径 */
+  const [selfTick, setSelfTick] = React.useState(0)
+
+  const listRef = React.useRef<HTMLDivElement | null>(null)
+  /** 页码 / 档位 / 读数各落一份 ref：loadAudit 里「夹回最后一页再取一次」要读最新值 */
+  const pageRef = React.useRef(page)
+  const sizeRef = React.useRef(size)
+  const dataRef = React.useRef(data)
+
+  const applyPage = React.useCallback((next: number) => { pageRef.current = next; setPage(next) }, [])
+  const applySize = React.useCallback((next: PageSizeChoice) => {
+    sizeRef.current = next
+    setSize(next)
+    writePageSize('audit', next)
+  }, [])
+  const applyData = React.useCallback((next: AuditData) => { dataRef.current = next; setData(next) }, [])
+
+  /**
+   * 拉一页审计条目（参数 page / size 的变更由下面的 effect 驱动重拉；函数本身只负责
+   * 「按 ref 里的当前页码 / 档位取数」）。页码越界（条目被日志库的容量 / 保留期裁掉）
+   * 时把页码夹回最后一页 —— 页码一变 effect 会带着正确的 offset 自己再取一次。
+   */
+  const loadAudit = React.useCallback(async (): Promise<void> => {
+    const pageSize = numericSize(sizeRef.current)
+    const token = ++auditSeq
+    setLoading(true)
+    try {
+      const result = await callAudit(`?limit=${pageSize}&offset=${(pageRef.current - 1) * pageSize}`)
+      if (token !== auditSeq) return
+      const total = Number(result?.total) || 0
+      const pageCount = Math.max(1, Math.ceil(total / pageSize))
+      if (pageRef.current > pageCount) {
+        applyPage(pageCount)
+        return
+      }
+      applyData({
+        entries: Array.isArray(result?.entries) ? result.entries : [],
+        total,
+        loaded: true,
+        loginRequired: false,
+        error: '',
+      })
+    } catch (error) {
+      if (token !== auditSeq) return
+      const message = errorMessage(error).trim() || '未知错误'
+      if (isAuthError(message)) {
+        // 401（未登录 / 会话过期）：清成空列表 + 登录提示，不报错轰炸
+        applyData({ entries: [], total: 0, loaded: true, loginRequired: true, error: '' })
+      } else {
+        console.warn('读取审计日志失败:', message)
+        // 非鉴权失败（最常见是后端还没起来）保留上一次的数据，只落屏一句说明
+        applyData({ ...dataRef.current, loaded: true, error: '读取审计日志失败，详见控制台' })
+      }
+    } finally {
+      if (token === auditSeq) setLoading(false)
+    }
+  }, [applyData, applyPage])
+
+  // 拉取的驱动源：激活（首次 / 切回来）、翻页、换档位、父组件的信号（轮询与契约 load）、
+  // 手动刷新。隐藏期间的信号在这里被挡掉（!active 早退）。页码被夹回最后一页时 state
+  // 一变，这里也会带着正确 offset 重取一次。
+  React.useEffect(() => {
+    if (!props.active) return
+    void loadAudit()
+  }, [props.active, props.reloadSignal, selfTick, page, size, loadAudit])
+
+  // 翻页回到列表顶部：数据是整页替换的，停在上一页的滚动位置会让人以为没翻成功
+  React.useEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = 0
+  }, [page])
+
+  /** 翻页：到边界直接不发请求（页脚的跳页框已经夹过一次，这里兜第二道） */
+  function gotoPage(target: number): void {
+    const pageSize = numericSize(sizeRef.current)
+    const pageCount = Math.max(1, Math.ceil(dataRef.current.total / pageSize))
+    const next = Math.min(Math.max(1, Math.round(target) || 1), pageCount)
+    if ((next - 1) * pageSize === (pageRef.current - 1) * pageSize) return
+    applyPage(next)
+  }
+
+  /**
+   * 换每页条数：页码按「当前第一条」换算（与系统事件视图同一口径），用户不会被甩回第一页。
+   */
+  function onSizeChange(next: PageSizeChoice): void {
+    if (next === sizeRef.current) return
+    const total = dataRef.current.total
+    const first = total ? (pageRef.current - 1) * numericSize(sizeRef.current) + 1 : 0
+    applySize(next)
+    applyPage(first ? Math.floor((first - 1) / numericSize(next)) + 1 : 1)
+  }
+
+  /** 空态文案：还没加载完 / 未登录 / 失败 / 库里确实没有审计条目 */
+  function auditEmptyText(): string {
+    if (!data.loaded) return '正在加载审计日志…'
+    if (data.loginRequired) return '登录后可查看审计日志'
+    if (data.error) return data.error
+    return '暂无审计日志'
+  }
+
+  /** 单条审计：时间（HH:mm:ss）+ 事件名（按前缀着色）+ 详情 */
+  function auditRow(entry: AuditEntry, index: number) {
+    const { event, detail } = splitAuditMessage(entry.message)
+    return (
+      <div className='audit-row' key={entry.id ?? index}>
+        <span className='audit-time' title={formatLogTime(entry.ts)}>{formatClock(entry.ts)}</span>
+        <span className={cn('audit-ev', auditToneOf(event))}>{event || '—'}</span>
+        <span className='audit-detail'>{detail}</span>
+      </div>
+    )
+  }
+
+  const pageSizeNum = numericSize(size)
+  const pageCount = Math.max(1, Math.ceil(data.total / pageSizeNum))
+  const currentPage = Math.min(Math.max(1, page), pageCount)
+  const rangeStart = data.total ? (currentPage - 1) * pageSizeNum + 1 : 0
+  const rangeEnd = data.total ? rangeStart + data.entries.length - 1 : 0
+
+  /** 页脚（portal 进 .panel 直属的 host）：读数 / 每页条数 / 跳页 / 翻页器，真分页口径 */
+  const footer = (
+    <TableFooter
+      total={data.total}
+      range={{ start: rangeStart, end: rangeEnd }}
+      page={currentPage}
+      pageCount={pageCount}
+      size={size}
+      sizes={AUDIT_PAGE_SIZES}
+      disabled={loading}
+      onSizeChange={onSizeChange}
+      onPageChange={gotoPage}
+    />
+  )
+
+  return (
+    <div className='logs-view-body' style={props.active ? undefined : { display: 'none' }}>
+      <style>{AUDIT_CSS}</style>
+      <div className='audit-intro'>
+        <span className='audit-intro-text'>{AUDIT_INTRO_TEXT}</span>
+        <span className='spacer' />
+        <Button variant='outline' disabled={loading} title='重新拉取审计条目'
+          onClick={() => setSelfTick(version => version + 1)}>刷新</Button>
+      </div>
+
+      {/* 容器直接复用 .log-list（边框 / 圆角 / 滚动 / 空态那套），审计行另起 .audit-row */}
+      <div className='log-list' ref={listRef}>
+        {data.entries.length ? data.entries.map((entry, index) => auditRow(entry, index))
+          : <div className='log-empty'>{auditEmptyText()}</div>}
+      </div>
+
+      {props.footerHost ? createPortal(footer, props.footerHost) : null}
+    </div>
+  )
+}
+
 function LogsPanel() {
   const [data, setData] = React.useState<PanelData>(EMPTY_DATA)
   /** 三个筛选（初值 = 上次会话的存盘；读不到时留待 restoreSavedFilters 补读） */
@@ -752,6 +1164,38 @@ function LogsPanel() {
     }
   }, [applyData, applyPage, restoreSavedFilters])
 
+  /* ─── 视图切换（系统事件 / 审计）───────────────── */
+
+  /** 当前视图（初值 = 上次会话的存盘）：'events' 系统事件 / 'audit' 审计 */
+  const [view, setView] = React.useState<ViewKind>(readView)
+  /**
+   * 审计视图的重拉信号：轮询与对外契约 load() 在审计视图可见时推它一把，AuditView
+   * 自己去重与拉取（审计的数据流独立于系统事件，不走 loadPanel）。
+   */
+  const [auditTick, setAuditTick] = React.useState(0)
+
+  const viewRef = React.useRef(view)
+  const applyView = React.useCallback((next: ViewKind) => {
+    viewRef.current = next
+    setView(next)
+    persistView(next)
+  }, [])
+  /**
+   * 审计页脚的挂载点：页脚必须是 .panel 的直接子节点（页 CSS 按这个结构分配高度），
+   * 而分页状态在 AuditView 手里 —— 由它把页脚 portal 进这个 host（切到审计视图时才挂载）。
+   */
+  const [auditFooterHost, setAuditFooterHost] = React.useState<HTMLDivElement | null>(null)
+
+  /**
+   * 刷新「当前可见的视图」：系统事件照旧走 loadPanel（顶栏徽标的数据源，审计视图挂出
+   * 期间也保持新鲜）；当前是审计视图时再推一个信号让它各自拉一次。轮询与对外契约
+   * load() 共用这一条路。
+   */
+  const refreshVisible = React.useCallback(async (options: LoadOptions = {}): Promise<void> => {
+    await loadPanel(options)
+    if (viewRef.current === 'audit') setAuditTick(version => version + 1)
+  }, [loadPanel])
+
   /** 外部直接塞一份结果（契约里的 render）：与 load 落地口径一致，但不动滚动位置 */
   const renderData = React.useCallback((result?: LogQueryResult | null): void => {
     // 不带参数 = 只重绘（旧实现翻页时这么调）：React 里状态没变就没有重绘的必要
@@ -770,19 +1214,22 @@ function LogsPanel() {
   const showCategoryImpl = React.useCallback(async (category: string): Promise<void> => {
     if (!hasCategory(dataRef.current.categories, category)) await loadPanel({ silent: true })
     if (!hasCategory(dataRef.current.categories, category)) return
+    // 分类筛选是系统事件视图的能力：跳转入口顺带把视图切回去（上次停在审计视图时，
+    // 不能让用户落在一页看不着的筛选上）
+    applyView('events')
     const next = applyFilters({ category })
     persistFilters(next)
     applyPage(1)
     // applyFilters 已经同步更新了 ref，这一次请求读到的就是新分类
     await loadPanel({ resetPage: true })
     shared().wbApp?.showPage?.('logs', { persist: true })
-  }, [applyFilters, applyPage, loadPanel])
+  }, [applyFilters, applyPage, applyView, loadPanel])
 
   /* ─── 挂载 / 卸载 ───────────────────────── */
 
   React.useEffect(() => {
     handle = {
-      load: loadPanel,
+      load: refreshVisible,
       render: renderData,
       showCategory: showCategoryImpl,
       applyAutoConfig: (ms, enabled) => setAuto({ ms, enabled }),
@@ -809,7 +1256,7 @@ function LogsPanel() {
       if (keywordTimerRef.current !== null) window.clearTimeout(keywordTimerRef.current)
       keywordTimerRef.current = null
     }
-  }, [loadPanel, renderData, showCategoryImpl])
+  }, [refreshVisible, renderData, showCategoryImpl])
 
   /**
    * 轮询定时器：配置一变就重排（旧实现的 startAuto 每次先 stopAuto），卸载时清表。三个前置条件
@@ -824,10 +1271,11 @@ function LogsPanel() {
       // 上一轮还没回来就跳过这一拍（见 polling 的说明）
       if (polling) return
       polling = true
-      void loadPanel({ silent: true }).finally(() => { polling = false })
+      // refreshVisible 会把审计视图也一并刷新（审计视图不可见时它的信号被挡掉，不打请求）
+      void refreshVisible({ silent: true }).finally(() => { polling = false })
     }, auto.ms)
     return () => { window.clearInterval(timer) }
-  }, [auto, loadPanel])
+  }, [auto, refreshVisible])
 
   /** 列表滚动定位：提交后把 pendingScrollRef 落到真实的 .log-list 上。用 layout effect
    *  是为了在绘制前完成，看不到跳动。 */
@@ -1027,115 +1475,138 @@ function LogsPanel() {
   return (
     <section className='panel' id='logs-panel-events'>
       <div className='panel-head'>
-        <h2>系统事件</h2>
+        <h2>{view === 'audit' ? '审计日志' : '系统事件'}</h2>
+        {/* 视图切换：与既有「系统事件」列表并列的「审计」视图（审计是服务端真分页，
+            导出 / 清空那些操作不适用，按视图条件渲染切换）。shrink-0 与时间档位同款：
+            不让分段控件在窄窗口下被压扁。 */}
+        <SegmentedControl options={VIEW_OPTIONS} value={view} onValueChange={applyView}
+          aria-label='切换日志视图' className='shrink-0' />
         {/* id 保留：app.js 的 renderTopbarStatus 会按 id 镜像这枚徽标的文案与配色。
             data-tone 空串 = 无修饰（旧实现的 renderBadge 同样只写 'badge'、不带修饰）；
-            有它 app.js 的 mirror 才会走 data-tone 分支，不去拆组件库 Badge 那串 Tailwind 类名。 */}
+            有它 app.js 的 mirror 才会走 data-tone 分支，不去拆组件库 Badge 那串 Tailwind 类名。
+            两个视图都挂着它：徽标始终反映系统事件的读数，顶栏镜像不因切到审计视图而断。 */}
         <Badge id='logs-badge' variant='outline' data-tone=''>{data.loaded ? badgeText : '—'}</Badge>
-        <div className='head-actions'>
-          <Button id='btn-logs-export' variant='outline' disabled={busy !== null}
-            onClick={() => void exportLogs()}>{busyExport ? busy?.label : '导出'}</Button>
-          <Button id='btn-logs-clear' variant='destructive' disabled={busy !== null}
-            onClick={() => void clearLogs()}>{busyClear ? busy?.label : '清空'}</Button>
-        </div>
+        {/* 导出 / 清空是系统事件视图的操作；审计是只读流，头部不放按钮（刷新在审计视图
+            自己的说明行里）。 */}
+        {view === 'events' ? (
+          <div className='head-actions'>
+            <Button id='btn-logs-export' variant='outline' disabled={busy !== null}
+              onClick={() => void exportLogs()}>{busyExport ? busy?.label : '导出'}</Button>
+            <Button id='btn-logs-clear' variant='destructive' disabled={busy !== null}
+              onClick={() => void clearLogs()}>{busyClear ? busy?.label : '清空'}</Button>
+          </div>
+        ) : null}
       </div>
 
       <div className='panel-body'>
-        <div className='log-filters'>
-          {/* 时间档位直接用组件库的 SegmentedControl（不再经 wbSegmented 挂载点）。shrink-0 补的是
-              旧 CSS `.log-filters .seg { flex: 0 0 auto }` —— 新控件没有 .seg 类，那条规则成了死
-              规则；不补的话窄窗口下它会被压扁，「本月」和「30 天」看着像同一个按钮。 */}
-          <SegmentedControl options={RANGE_OPTIONS} value={range} onValueChange={onRangeChange}
-            aria-label='事件日志时间范围' className='shrink-0' />
-          {/* min-w-[120px] 补的是旧 CSS `.log-filters select { width:auto; min-width:120px }`：原生
-              select 换成按钮触发器后那条规则不再命中，宽度锚要自己带。展示文案显式给 SelectValue
-              （不依赖 value 自动显示）。 */}
-          <Select value={filters.level} onValueChange={next => onSelectChange({ level: String(next ?? '') })}>
-            <SelectTrigger id='logs-level' className='min-w-[120px]' title='按最低级别筛选'
-              aria-label='按最低级别筛选'>
-              <SelectValue>
-                {LEVEL_OPTIONS.find(item => item.value === filters.level)?.label ?? ALL_LEVEL_LABEL}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {LEVEL_OPTIONS.map(option => (
-                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={filters.category} onValueChange={next => onSelectChange({ category: String(next ?? '') })}>
-            <SelectTrigger id='logs-category' className='min-w-[120px]' title='按分类筛选'
-              aria-label='按分类筛选'>
-              <SelectValue>
-                {filters.category ? (categories[filters.category] || filters.category) : ALL_CATEGORY_LABEL}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {/* 「全部分类」+ 后端字典（含「脱敏」：不再有新条目，但历史条目要能筛出来） */}
-              <SelectItem value=''>{ALL_CATEGORY_LABEL}</SelectItem>
-              {Object.entries(categories).map(([value, label]) => (
-                <SelectItem key={value} value={value}>{label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {/* 搜索框：InputGroup + addon 图标（与 input-control.tsx 的用法一致）。w-auto flex-auto
-              压掉组件库的 w-full（tailwind-merge 按同类属性判胜），让它继续当筛选行里唯一的弹性项
-              —— 旧 CSS 的 `.log-filters input[type="search"] { flex: 1 1 140px }` 会被分层
-              !important 的工具类盖掉，弹性由这里显式带。刻意**不带** data-island-input：那是
-              输入框岛（就地升级）的钩子，两个岛同时挂一个输入框会打架。 */}
-          <InputGroup className='w-auto flex-auto'>
-            <InputGroupInput id='logs-keyword' type='search' placeholder='搜索消息关键词…'
-              autoComplete='off' aria-label='搜索消息关键词' value={filters.keyword}
-              onChange={event => onKeywordChange(event.currentTarget.value)} />
-            <InputGroupAddon aria-hidden='true'>⌕</InputGroupAddon>
-          </InputGroup>
-          {/* 「导出日志」：window.open 下载端点，浏览器按附件落盘（整个日志文件，不带筛选
-              —— 下载端点没有查询参数）。禁用看 data.total（= 全库条数，页脚徽标同一个数）：
-              库里一条都没有时下载到的只是空文件；筛选把当前视图筛空了但库里还有日志时，
-              导出的仍然是全部日志，不该禁用。shrink-0 与时间档位同款：不让按钮被压缩换行。 */}
-          <Button id='btn-logs-download' variant='outline' className='shrink-0'
-            disabled={data.total === 0} title='把全部运行日志下载为 JSONL 文件'
-            onClick={() => window.open(LOGS_DOWNLOAD_URL, '_blank', 'noopener')}>
-            导出日志
-          </Button>
+        {/* 系统事件视图：两个视图都常挂、用内联 display:none 收起不可见的那个 —— 切换
+            不丢滚动位置与筛选，也不用来回重挂（包装层的 flex 分配见 AUDIT_CSS 的
+            .logs-view-body）。 */}
+        <div className='logs-view-body' style={view === 'audit' ? { display: 'none' } : undefined}>
+          <div className='log-filters'>
+            {/* 时间档位直接用组件库的 SegmentedControl（不再经 wbSegmented 挂载点）。shrink-0 补的是
+                旧 CSS `.log-filters .seg { flex: 0 0 auto }` —— 新控件没有 .seg 类，那条规则成了死
+                规则；不补的话窄窗口下它会被压扁，「本月」和「30 天」看着像同一个按钮。 */}
+            <SegmentedControl options={RANGE_OPTIONS} value={range} onValueChange={onRangeChange}
+              aria-label='事件日志时间范围' className='shrink-0' />
+            {/* min-w-[120px] 补的是旧 CSS `.log-filters select { width:auto; min-width:120px }`：原生
+                select 换成按钮触发器后那条规则不再命中，宽度锚要自己带。展示文案显式给 SelectValue
+                （不依赖 value 自动显示）。 */}
+            <Select value={filters.level} onValueChange={next => onSelectChange({ level: String(next ?? '') })}>
+              <SelectTrigger id='logs-level' className='min-w-[120px]' title='按最低级别筛选'
+                aria-label='按最低级别筛选'>
+                <SelectValue>
+                  {LEVEL_OPTIONS.find(item => item.value === filters.level)?.label ?? ALL_LEVEL_LABEL}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {LEVEL_OPTIONS.map(option => (
+                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={filters.category} onValueChange={next => onSelectChange({ category: String(next ?? '') })}>
+              <SelectTrigger id='logs-category' className='min-w-[120px]' title='按分类筛选'
+                aria-label='按分类筛选'>
+                <SelectValue>
+                  {filters.category ? (categories[filters.category] || filters.category) : ALL_CATEGORY_LABEL}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {/* 「全部分类」+ 后端字典（含「脱敏」：不再有新条目，但历史条目要能筛出来） */}
+                <SelectItem value=''>{ALL_CATEGORY_LABEL}</SelectItem>
+                {Object.entries(categories).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>{label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {/* 搜索框：InputGroup + addon 图标（与 input-control.tsx 的用法一致）。w-auto flex-auto
+                压掉组件库的 w-full（tailwind-merge 按同类属性判胜），让它继续当筛选行里唯一的弹性项
+                —— 旧 CSS 的 `.log-filters input[type="search"] { flex: 1 1 140px }` 会被分层
+                !important 的工具类盖掉，弹性由这里显式带。刻意**不带** data-island-input：那是
+                输入框岛（就地升级）的钩子，两个岛同时挂一个输入框会打架。 */}
+            <InputGroup className='w-auto flex-auto'>
+              <InputGroupInput id='logs-keyword' type='search' placeholder='搜索消息关键词…'
+                autoComplete='off' aria-label='搜索消息关键词' value={filters.keyword}
+                onChange={event => onKeywordChange(event.currentTarget.value)} />
+              <InputGroupAddon aria-hidden='true'>⌕</InputGroupAddon>
+            </InputGroup>
+            {/* 「导出日志」：window.open 下载端点，浏览器按附件落盘（整个日志文件，不带筛选
+                —— 下载端点没有查询参数）。禁用看 data.total（= 全库条数，页脚徽标同一个数）：
+                库里一条都没有时下载到的只是空文件；筛选把当前视图筛空了但库里还有日志时，
+                导出的仍然是全部日志，不该禁用。shrink-0 与时间档位同款：不让按钮被压缩换行。 */}
+            <Button id='btn-logs-download' variant='outline' className='shrink-0'
+              disabled={data.total === 0} title='把全部运行日志下载为 JSONL 文件'
+              onClick={() => window.open(LOGS_DOWNLOAD_URL, '_blank', 'noopener')}>
+              导出日志
+            </Button>
+          </div>
+
+          {/* 级别快捷筛选 chips：与上面的级别下拉写同一份 filters.level（一条 onSelectChange
+              路），给常用三档一个一键直达的入口；选中 chip 的配色见 LOG_LEVEL_CHIPS_CSS。
+              计数读 stats 的 byLevel（load 时并行取回的），「全部」用列表响应自带的 total
+              （= 全库条数，页脚徽标同一个数）；没拿到就只显示名称，不为 chips 单独发请求。 */}
+          <style>{LOG_LEVEL_CHIPS_CSS}</style>
+          <div className='log-level-chips' role='group' aria-label='按级别快捷筛选'>
+            {LEVEL_CHIPS.map(chip => (
+              <LevelChip key={chip.value} tone={chip.tone} title={chip.title}
+                active={filters.level === chip.value} label={chip.label}
+                count={chip.value === ''
+                  ? (data.loaded ? data.total : undefined)
+                  : data.byLevel[chip.value]}
+                onClick={() => onLevelChipClick(chip.value)} />
+            ))}
+          </div>
+
+          <div className='log-list' id='log-list' ref={listRef}>
+            {rows.length ? rows.map((entry, index) => logRow(entry, index))
+              : <div className='log-empty'>{emptyText(data)}</div>}
+          </div>
         </div>
 
-        {/* 级别快捷筛选 chips：与上面的级别下拉写同一份 filters.level（一条 onSelectChange
-            路），给常用三档一个一键直达的入口；选中 chip 的配色见 LOG_LEVEL_CHIPS_CSS。
-            计数读 stats 的 byLevel（load 时并行取回的），「全部」用列表响应自带的 total
-            （= 全库条数，页脚徽标同一个数）；没拿到就只显示名称，不为 chips 单独发请求。 */}
-        <style>{LOG_LEVEL_CHIPS_CSS}</style>
-        <div className='log-level-chips' role='group' aria-label='按级别快捷筛选'>
-          {LEVEL_CHIPS.map(chip => (
-            <LevelChip key={chip.value} tone={chip.tone} title={chip.title}
-              active={filters.level === chip.value} label={chip.label}
-              count={chip.value === ''
-                ? (data.loaded ? data.total : undefined)
-                : data.byLevel[chip.value]}
-              onClick={() => onLevelChipClick(chip.value)} />
-          ))}
-        </div>
-
-        <div className='log-list' id='log-list' ref={listRef}>
-          {rows.length ? rows.map((entry, index) => logRow(entry, index))
-            : <div className='log-empty'>{emptyText(data)}</div>}
-        </div>
+        {/* 审计视图：独立的条目流（GET /api/audit，服务端真分页），与系统事件互不干扰。
+            常挂不卸、不可见时自己收起 —— 切换不丢页码与读数。 */}
+        <AuditView active={view === 'audit'} reloadSignal={auditTick} footerHost={auditFooterHost} />
       </div>
 
-      {/* 读数 / 每页条数 / 跳页 / 翻页器交给通用表格外壳（table-shell.tsx）：五张表一套。
-          翻页只重绘不打接口（数据一次拉满，见 gotoPage），换档位同理 —— 所以这里能给出
-          「全部」那一档。页脚左侧原先还有两句说明（日志文件路径 / 429 切换文案），
-          按用户要求移除；`#logs-file` 那个元素随之消失，全仓无其它引用。 */}
-      <TableFooter
-        total={entries.length}
-        range={paged ? { start: pageRangeStart, end: pageRangeEnd } : null}
-        page={currentPage}
-        pageCount={pageCount}
-        size={size}
-        sizes={PAGE_SIZES}
-        onSizeChange={onSizeChange}
-        onPageChange={gotoPage}
-      />
+      {/* 页脚保持 .panel 的直接子节点（页 CSS 按这个结构给 .panel-foot 分配 flex:none）。
+          页脚属于各自的视图：系统事件的翻页纯前端（数据一次拉满），审计的真打接口
+          （limit/offset 后端执行，没有「全部」档）。审计的页脚由 AuditView 经 portal
+          渲染进 host（分页状态在它自己手里），切到审计视图时 host 才挂载。 */}
+      {view === 'events' ? (
+        <TableFooter
+          total={entries.length}
+          range={paged ? { start: pageRangeStart, end: pageRangeEnd } : null}
+          page={currentPage}
+          pageCount={pageCount}
+          size={size}
+          sizes={PAGE_SIZES}
+          onSizeChange={onSizeChange}
+          onPageChange={gotoPage}
+        />
+      ) : (
+        <div ref={setAuditFooterHost} style={{ display: 'contents' }} />
+      )}
     </section>
   )
 }

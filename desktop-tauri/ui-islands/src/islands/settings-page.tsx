@@ -40,6 +40,7 @@ import {
   QUEUE_FIELDS,
   RETENTION_FIELDS,
   RETRY_FIELDS,
+  SETTINGS_CAT_KEY,
   SHELL_CONTENT_WIDTHS,
   SHELL_PAGE_ANIMS,
   SHELL_TAG_LABELS,
@@ -321,8 +322,8 @@ function numericBadge(state: NumericState): React.ReactNode {
 }
 
 /** 刷新按钮（无修饰的 button → Button 的 outline 档，与静态骨架的观感一致） */
-function RefreshButton({ id, onClick }: { id: string; onClick: () => void }) {
-  return <Button id={id} variant='outline' onClick={onClick}>刷新</Button>
+function RefreshButton({ id, onClick, disabled }: { id: string; onClick: () => void; disabled?: boolean }) {
+  return <Button id={id} variant='outline' disabled={disabled} onClick={onClick}>刷新</Button>
 }
 
 /* ─── 通用分类 ─────────────────────────────── */
@@ -2066,6 +2067,740 @@ function DeployPane({ snap }: { snap: SettingsSnapshot }) {
           </div>
         </div>
       </section>
+
+      <DangerZoneSection />
+    </>
+  )
+}
+
+/**
+ * 「危险操作」（部署信息分区的末尾）：停止整个服务。
+ *
+ * 与上面三个只读分区不同，这里是 DeployPane 里唯一的写操作，也是全页唯一
+ * 「按下后面板自己就没了」的按钮 —— 因此确认弹窗必须把后果与恢复路径一次
+ * 说全（wbConfirm 的 okClass='danger' 走红色确认键，绝不静默执行）。请求发出
+ * 后进程随之退出，后续任何请求都会连接失败，那是预期行为；恢复只能在服务器
+ * 上手动做，面板帮不上忙，文案里直接给出命令。日常停用单个账号请去「账号」
+ * 页 —— 那是可逆的常规操作，与「彻底关闭对外服务」不是一个量级。
+ */
+function DangerZoneSection() {
+  /** 「停止服务」请求在途：按钮禁用换文案（进程马上就要退出，防连点） */
+  const [stopping, setStopping] = React.useState(false)
+
+  async function onShutdown(): Promise<void> {
+    if (stopping) return
+    if (!(await dataAsk(
+      '停止服务',
+      '停止后面板与 API 全部不可用，进行中的请求将被终止；桌面端会退出整个应用。\n'
+      + '恢复必须在服务器上手动重启容器：docker restart agent2api 或 docker compose up -d。\n'
+      + '确认要停止服务吗？',
+      '确认停止',
+    ))) return
+    setStopping(true)
+    try {
+      const response = await fetch('/api/shutdown', {
+        method: 'POST',
+        headers: { Accept: 'application/json' },
+      })
+      if (!response.ok) {
+        const env = (await response.json().catch(() => null)) as { error?: string } | null
+        toast(`停止服务失败：${env?.error || `HTTP ${response.status}`}`, 'err')
+        return
+      }
+      toast('服务已停止，请在服务器上执行 docker start agent2api 或 docker compose up -d 恢复', 'ok')
+    } catch (error) {
+      // 进程退出会掐断连接：请求已受理但响应没送到时，这里的「失败」
+      // 多半就是「服务已停」—— 同样按已停提示，不误导用户再点一次
+      dataToast(`请求已发出（${dataError(error)}）。若面板仍可访问请重试，否则服务已停止：请在服务器上执行 docker start agent2api 或 docker compose up -d 恢复`, 'ok')
+    } finally {
+      setStopping(false)
+    }
+  }
+
+  return (
+    <section className='panel'>
+      <PanelHead
+        title='危险操作'
+        tip='要彻底关闭对外服务时才用：停止后面板与 API 全部不可用，恢复必须登录服务器手动重启容器；日常停用单个账号请到「账号」页。'
+      />
+      <div className='panel-body'>
+        <div className='danger-zone'>
+          <strong>停止后面板与 API 全部不可用</strong>
+          ，恢复必须在服务器上手动执行 docker restart agent2api 或 docker compose up -d。
+          这是给「要彻底关闭对外服务」的场景用的；日常停用单个账号请去「账号」页。
+        </div>
+        <div className='mt-2.5'>
+          <Button id='btn-shutdown' variant='destructive' disabled={stopping} onClick={() => void onShutdown()}>
+            {stopping ? '停止中…' : '停止服务'}
+          </Button>
+          <div className='hint'>立即退出网关进程（等同在服务器上 docker stop）；停机前自动落盘统计数据。</div>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+/* ─── 备份与运维 ───────────────────────────────── */
+
+/**
+ * 左栏的「备份与运维」条目（插在「部署信息」之后）。
+ *
+ * ── 为什么不进 settings-model 的 CATEGORIES ─────────
+ * 本分区只允许改 settings-page.tsx（任务边界），而 CATEGORIES 与分类白名单校验
+ * （settings-state 的 showCategory）都在别的文件里。所以这里用一条**本组件自持的
+ * 选中态**承接（见 SettingsPage 里的 opsActive）：
+ *   · 左栏列表在本文件把这一项插到 deploy 后面渲染；
+ *   · store 的 category 永远不会是 'backup'（白名单会把它打回「通用」）—— 选中态
+ *     存在 SettingsPage 的局部 state 里，点其它分类或外部 showCategory（更新面板的
+ *     「去更新」）时收起；
+ *   · localStorage 偏好照写 SETTINGS_CAT_KEY（与其它分类同一把键）：下次进设置页
+ *     先按它把本分区亮出来。store 校验会把存档打回 general —— 恰好与
+ *     opsActive=true 时「其它分类全部不亮」的渲染规则互补，两套状态不打架。
+ * 哪天 settings-model 开放改动了，把这一小段状态搬进 store 即可，视图不用动。
+ */
+const OPS_CATEGORY = { id: 'backup', label: '备份与运维', icon: 'database' }
+
+/** 左栏完整列表：CATEGORIES 在「部署信息」后插入备份与运维（模块期算一次） */
+const NAV_CATEGORIES: ReadonlyArray<{ id: string; label: string; icon: string }> = (() => {
+  const at = CATEGORIES.findIndex(item => item.id === 'deploy')
+  return [...CATEGORIES.slice(0, at + 1), OPS_CATEGORY, ...CATEGORIES.slice(at + 1)]
+})()
+
+/**
+ * 「备份与运维」分区：定时备份 / 快照导出与导入 / 维护模式 / 在线会话。
+ *
+ * 后端是安全与运维切片的 8 条路由（backup_api / maintenance_api / sessions_api，
+ * 全部 protected，信封 {success,data} / {success:false,error}）。四个面板各自
+ * 自持加载（与「数据」分区的两个维护面板同一形态）：进设置页即并发拉自己的
+ * GET、互相不依赖；写操作成功后局部刷新自己的读数，错误一律走 toast。
+ *
+ * 访问走**同源 fetch**（会话在 cookie 里，与 notify-center.js 的 /api/logs 同路），
+ * 不经 workbuddyDesktop 桥 —— 这批接口是纯 HTTP 语义（下载 Blob / 上传快照体），
+ * 桥上没有对应命令。
+ */
+
+/** 管理 API 信封：成功 {success:true,data}，失败 {success:false,error} */
+type OpsEnvelope<T> = { success?: boolean; data?: T; error?: string }
+
+/**
+ * 同源调用 /api/* 并统一拆信封：非 2xx、success:false、非 JSON（反代错误页）都
+ * 抛成带后端可读提示的 Error —— 「立即备份」撞上冷却 / 占位的 400、吊销自己会话
+ * 的 400、导入缺 confirm 的 400，都靠这条路径把原因原样摆进 toast。
+ */
+async function opsApi<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
+  const hasBody = init?.body !== undefined
+  const response = await fetch(path, {
+    method: init?.method ?? 'GET',
+    headers: { Accept: 'application/json', ...(hasBody ? { 'Content-Type': 'application/json' } : {}) },
+    body: hasBody ? JSON.stringify(init?.body) : undefined,
+  })
+  let env: OpsEnvelope<T> | null = null
+  try { env = await response.json() as OpsEnvelope<T> } catch { /* 非 JSON 响应体（错误页） */ }
+  if (!response.ok || !env || env.success !== true) {
+    throw new Error(env?.error || `请求失败（HTTP ${response.status}）`)
+  }
+  return env.data as T
+}
+
+/** GET /api/backup/settings 的 data（字段口径照 backup_api::get_settings） */
+type BackupSettingsData = {
+  enabled: boolean
+  keep: number
+  intervalHours?: number
+  dir?: string
+  lastRunAt?: number | null
+  lastSuccessAt?: number | null
+  lastResult?: string | null
+  lastError?: string | null
+  nextRunAt?: number | null
+}
+
+/** 快照 JSON 的外壳（导入前的前端轻校验只认 kind 标识，深校验交给后端） */
+type OpsSnapshotMeta = {
+  kind?: unknown
+  version?: unknown
+  exportedAt?: number
+  counts?: { kv?: number; accounts?: number }
+}
+
+/** GET /api/sessions/list 的一条会话（毫秒时间戳，0 = 早于本次运行，前端显示「—」） */
+type OpsSession = { sessionId: string; createdAt: number; lastActivity: number }
+type SessionsData = { current: string | null; sessions: OpsSession[] }
+
+/** 毫秒时间戳 → 展示文本（0 / 空 = 从未发生或早于本次运行） */
+function opsTimeText(ms: number | null | undefined): string {
+  return ms ? new Date(ms).toLocaleString() : '—'
+}
+
+/** 相对时刻（会话「最近活动」列）：早于本次运行给「—」，与 opsTimeText 同一口径 */
+function opsAgoText(ms: number | null | undefined): string {
+  if (!ms) return '—'
+  const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000))
+  if (seconds < 60) return '刚刚'
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`
+  return `${Math.floor(seconds / 86400)} 天前`
+}
+
+/** 导出文件名的时间戳段：20261001-153045（文件名里不能带冒号，秒级够用） */
+function opsFileStamp(): string {
+  const now = new Date()
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+}
+
+/** 会话 id 的展示段：32 位十六进制太长，前 10 位足够人眼分辨（完整 id 在 title 里） */
+function opsSessionShort(sessionId: string): string {
+  return sessionId.length > 10 ? `${sessionId.slice(0, 10)}…` : sessionId
+}
+
+/* ── 面板一：定时备份 ───────────────────────── */
+
+/** 保留份数这一行（NumberRow 要的 NumberField 形状；键名与后端 backup_api 一致） */
+const BACKUP_KEEP_FIELD: NumberField = {
+  key: 'keep',
+  id: 'settings-backup-keep',
+  label: '保留份数',
+  unit: '份',
+  min: 1,
+  max: 90,
+  hint: '最多保留多少份整库快照（可填 1–90 份，默认 7），超出后最旧的一份会被自动删除；每天定时与手动「立即备份」都计入。',
+}
+
+function BackupSettingsPanel() {
+  const [state, setState] = React.useState<BackupSettingsData | null>(null)
+  /** 在途请求：switch（开关）/ keep（份数）/ run（立即备份）——任一在途全部按钮禁用 */
+  const [busy, setBusy] = React.useState<'switch' | 'keep' | 'run' | null>(null)
+
+  const refresh = React.useCallback(async () => {
+    try {
+      setState(await opsApi<BackupSettingsData>('/api/backup/settings'))
+    } catch (error) {
+      toast(`读取备份设置失败：${dataError(error)}`, 'err')
+    }
+  }, [])
+  React.useEffect(() => { void refresh() }, [refresh])
+
+  /** PUT settings 允许部分字段（enabled / keep 各自独立提交），返回的是保存后的值 */
+  async function saveSettings(patch: { enabled?: boolean; keep?: number }): Promise<{ enabled: boolean; keep: number }> {
+    return opsApi<{ enabled: boolean; keep: number }>('/api/backup/settings', { method: 'PUT', body: patch })
+  }
+
+  async function onEnabledChange(next: boolean): Promise<void> {
+    setBusy('switch')
+    try {
+      const saved = await saveSettings({ enabled: next })
+      setState(prev => (prev ? { ...prev, ...saved } : prev))
+      toast(next ? '✅ 定时备份已开启，今天的一次已排上' : '已关闭定时备份（已生成的快照原样保留）', 'ok')
+    } catch (error) {
+      toast(`保存失败：${dataError(error)}`, 'err')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function onKeepCommit(raw: string): Promise<void> {
+    const parsed = parseInteger(raw, BACKUP_KEEP_FIELD.min, BACKUP_KEEP_FIELD.max, '保留份数')
+    if (!parsed.ok) {
+      toast(parsed.message, 'err')
+      return
+    }
+    setBusy('keep')
+    try {
+      const saved = await saveSettings({ keep: parsed.value })
+      setState(prev => (prev ? { ...prev, ...saved } : prev))
+      toast(`✅ 保留份数已改为 ${saved.keep} 份`, 'ok')
+    } catch (error) {
+      toast(`保存失败：${dataError(error)}`, 'err')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function onRunNow(): Promise<void> {
+    setBusy('run')
+    try {
+      const result = await opsApi<{ summary?: string }>('/api/backup/run', { method: 'POST' })
+      toast(`✅ ${result.summary || '备份完成'}`, 'ok')
+    } catch (error) {
+      // 占位被占 / 上次备份还在冷却中的 400 会带可读提示（「请稍后…」），原样展示
+      toast(`未能开始备份：${dataError(error)}`, 'err')
+    } finally {
+      setBusy(null)
+      void refresh()
+    }
+  }
+
+  const badge = state === null
+    ? <StatusBadge tone='idle'>检测中…</StatusBadge>
+    : state.enabled
+      ? <StatusBadge tone='ok'>已开启</StatusBadge>
+      : <StatusBadge tone='idle'>已关闭</StatusBadge>
+
+  return (
+    <section className='panel'>
+      <PanelHead
+        title='定时备份'
+        tip='每天自动对 SQLite 主库执行一次 VACUUM INTO，把整库压缩成一个全新快照文件写入备份目录。快照是独立的单文件数据库，拷走即备份、改名替换主库即恢复；运行中的库直接复制可能得到损坏的半个文件，VACUUM INTO 生成的是完整一致的副本。'
+        badge={badge}
+        actions={<RefreshButton id='btn-backup-refresh' disabled={busy !== null} onClick={() => void refresh()} />}
+      />
+      <div className='panel-body'>
+        <div className='retention-list'>
+          <SwitchRow
+            id='settings-backup-enabled'
+            label='启用定时备份（每天一次整库快照）'
+            checked={state?.enabled ?? false}
+            disabled={state === null || busy !== null}
+            onCheckedChange={next => void onEnabledChange(next)}
+          />
+          <NumberRow
+            field={BACKUP_KEEP_FIELD}
+            value={state ? state.keep : null}
+            disabled={busy !== null}
+            onCommit={onKeepCommit}
+          />
+          <DeployRow
+            label='备份目录'
+            value={state?.dir || '—'}
+            hint='快照落盘位置（配置目录下的 backups/）。这个目录也在「快照导出」的覆盖范围之外 —— 整库快照与 JSON 快照互不替代，一个救灾难、一个救配置。'
+          />
+          <DeployRow
+            label='上次运行'
+            value={opsTimeText(state?.lastRunAt)}
+            hint='最近一次定时或手动备份的开始时刻；从未运行过显示「—」。'
+          />
+          <DeployRow
+            label='上次结果'
+            value={state?.lastError
+              ? <span className='text-destructive'>失败（原因见下一行）</span>
+              : <span style={state?.lastResult ? { color: 'var(--ok)' } : undefined}>{state?.lastResult || '—'}</span>}
+            hint='最近一次备份的结论：成功时是摘要，失败时这里只标红，具体原因看下一行（后端失败时两处记录的是同一段话，不重复展示）。'
+          />
+          {state?.lastError ? (
+            <DeployRow
+              label='失败原因'
+              value={<span className='text-destructive'>{state.lastError}</span>}
+              hint='最近一次备份失败的具体错误；常见原因是磁盘空间不足或备份目录不可写。'
+            />
+          ) : null}
+          <DeployRow
+            label='下次运行'
+            value={state
+              ? state.enabled
+                ? (state.nextRunAt ? opsTimeText(state.nextRunAt) : '排期计算中…')
+                : '—（未开启）'
+              : '…'}
+            hint='按每天一次自动排期；从关闭拨到开启会立刻排到当前时刻（开启即跑一次）。'
+          />
+          <div className='retention-row'>
+            <label htmlFor='btn-backup-run'>立即备份</label>
+            <span className='storage-line'>
+              <Button
+                id='btn-backup-run'
+                variant='outline'
+                disabled={state === null || busy !== null}
+                onClick={() => void onRunNow()}
+              >
+                {busy === 'run' ? '备份中…' : '立即备份'}
+              </Button>
+            </span>
+            <div className='hint'>
+              不等每天的计划，现在就生成一份快照。上一次刚结束（冷却中）或正在执行时会提示稍后再试 —— 提示原文来自后端，照它说的等一会儿即可。
+            </div>
+          </div>
+        </div>
+        <div className='hint retention-note'>
+          整库快照（.db 文件）连日志与请求统计一起备份，服务「坏库整体回滚」；只搬配置到另一台机器请用下面的「快照导出与导入」。
+        </div>
+      </div>
+    </section>
+  )
+}
+
+/* ── 面板二：快照导出与导入 ─────────────────── */
+
+/**
+ * JSON 快照的导出与导入（对应 GET /api/backup/export、POST /api/backup/import）。
+ *
+ * 交互参考 NextChat 的配置快照（export → downloadAs 带时间戳文件名下载；import →
+ * 选文件解析 → 成功后 location.reload()），差异在确认强度：这里的导入是**整表覆盖**
+ * （kv + accounts 全表替换，快照之后新增的数据全部消失），所以多加一层弹窗 ——
+ * 先 wbConfirm 过一遍、再落一个必须显式点「确认覆盖导入」的 Dialog，两步都过才发请求。
+ * 请求体必须带 "confirm": true（后端护栏，缺省一律 400），且接受快照与 confirm 并列。
+ */
+function SnapshotExportImportPanel() {
+  const [exporting, setExporting] = React.useState(false)
+  const [importing, setImporting] = React.useState(false)
+  /** 过了第一重确认、停在第二步弹窗里的快照（null = 没有待导入的） */
+  const [pending, setPending] = React.useState<{ snapshot: Record<string, unknown>; meta: OpsSnapshotMeta } | null>(null)
+  const fileRef = React.useRef<HTMLInputElement | null>(null)
+  const cancelRef = React.useRef<HTMLButtonElement | null>(null)
+
+  async function onExport(): Promise<void> {
+    setExporting(true)
+    try {
+      const response = await fetch('/api/backup/export', { headers: { Accept: 'application/json' } })
+      const text = await response.text()
+      let env: OpsEnvelope<OpsSnapshotMeta> | null = null
+      try { env = JSON.parse(text) as OpsEnvelope<OpsSnapshotMeta> } catch { /* 错误页等非 JSON */ }
+      if (!response.ok || !env || env.success !== true) {
+        throw new Error(env?.error || `导出失败（HTTP ${response.status}）`)
+      }
+      // Blob + a[download] 下载（NextChat 的 downloadAs 同款交互；文件名带时间戳）
+      const blob = new Blob([text], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `aibuddy-backup-${opsFileStamp()}.json`
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      // 延迟回收：click() 已同步把下载交给浏览器，但个别内核在事件循环转完前
+      // 回收 URL 会截断下载 —— 计时器兜底，10 秒足够任何引擎走完启动阶段
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
+      const counts = env.data?.counts
+      toast(counts
+        ? `✅ 快照已开始下载（设置 ${counts.kv ?? 0} 项 · 账号 ${counts.accounts ?? 0} 条）`
+        : '✅ 快照已开始下载', 'ok')
+    } catch (error) {
+      toast(dataError(error), 'err')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  /** 选完文件：解析 + 轻校验 → 第一重确认（wbConfirm）→ 进入第二步弹窗 */
+  async function onPickFile(file: File | undefined): Promise<void> {
+    if (!file) return
+    let snapshot: Record<string, unknown>
+    try {
+      const parsed = JSON.parse(await file.text()) as Record<string, unknown> & { data?: Record<string, unknown> }
+      // 导出文件可以是整份信封，也可以是裸的 data 部分 —— 与后端 extract_snapshot 同一口径
+      const inner = (parsed.data && typeof parsed.data === 'object' ? parsed.data : parsed) as Record<string, unknown>
+      if (inner.kind !== 'agent2api-backup') {
+        throw new Error('这不是本网关导出的备份快照（缺少 kind 标识），已停止导入')
+      }
+      // 与后端同一道版本闸：在前端挡下能省一次注定失败的往返，文案也更有指向性
+      if (Number(inner.version) !== 1) {
+        throw new Error('快照版本不受支持：请用同版本网关导出的快照')
+      }
+      snapshot = inner
+    } catch (error) {
+      toast(dataError(error), 'err')
+      if (fileRef.current) fileRef.current.value = ''
+      return
+    }
+    const first = await dataAsk(
+      '导入备份快照 · 第 1/2 步',
+      '导入会用快照整表替换当前的账号与设置（不是合并）：现有账号、API Key、全部设置都会被快照内容覆盖，快照之后新增的数据会丢失。\n确认后还会弹出第二步确认。',
+      '下一步',
+    )
+    if (!first) {
+      if (fileRef.current) fileRef.current.value = ''
+      return
+    }
+    setPending({ snapshot, meta: snapshot as OpsSnapshotMeta })
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  async function onImportConfirm(): Promise<void> {
+    if (!pending || importing) return
+    setImporting(true)
+    try {
+      const result = await opsApi<{ imported?: { kv?: number; accounts?: number } }>('/api/backup/import', {
+        method: 'POST',
+        // confirm:true 是后端的硬护栏；快照本体与它并列放在顶层
+        body: { confirm: true, ...pending.snapshot },
+      })
+      toast(`✅ 导入完成（设置 ${result.imported?.kv ?? 0} 项 · 账号 ${result.imported?.accounts ?? 0} 条），页面即将刷新…`, 'ok')
+      setPending(null)
+      // 导入替换了全部设置（含登录会话表）：整页重载让面板、内存配置与库对齐 ——
+      // 若当前登录令牌已被快照替换，刷新后会自然落到登录页
+      window.setTimeout(() => window.location.reload(), 1200)
+    } catch (error) {
+      toast(`导入失败：${dataError(error)}`, 'err')
+      setImporting(false)
+    }
+  }
+
+  const counts = pending?.meta.counts
+  const exportedAt = pending?.meta.exportedAt
+
+  return (
+    <section className='panel'>
+      <PanelHead
+        title='快照导出与导入'
+        tip='把整台网关的配置与账号装进一个 JSON 文件带走（配置搬家 / 坏库重建），或从快照恢复。导出包含全部敏感数据，导入是整表覆盖 —— 两头都要当心。'
+        badge={<Badge variant='destructive'>含敏感凭据</Badge>}
+      />
+      <div className='panel-body'>
+        <div className='danger-zone'>
+          <strong>导出的快照包含全部账号凭证、API Key 与管理员口令哈希</strong>
+          —— 等于把整台网关装进口袋。请只保存在你控制的安全位置，不要经聊天工具、网盘或邮件明文传输；泄露快照等于交出全部账号与管理员权限。
+        </div>
+        <div className='mt-2.5 flex flex-wrap gap-2.5'>
+          <Button
+            id='btn-backup-export'
+            variant='outline'
+            disabled={exporting || importing}
+            onClick={() => void onExport()}
+          >
+            {exporting ? '导出中…' : '导出 JSON 快照'}
+          </Button>
+          <Button
+            id='btn-backup-import'
+            variant='destructive'
+            disabled={exporting || importing || pending !== null}
+            onClick={() => fileRef.current?.click()}
+          >
+            从快照文件导入…
+          </Button>
+          <input
+            ref={fileRef}
+            type='file'
+            accept='application/json,.json'
+            className='hidden'
+            onChange={event => void onPickFile(event.target.files?.[0])}
+          />
+        </div>
+        <div className='hint'>
+          导入语义是「恢复到快照那一刻」：kv 与 accounts 两张表整体替换，当前的一切先被清空再按快照重插。
+          快照里的登录令牌表会一并替换 —— <strong>导入后当前登录很可能被踢下线，需用快照里的管理员账号重新登录</strong>；
+          所以导入成功后面板会自动刷新页面。版本不匹配（跨大版本的快照）会被后端拒绝，请用同版本网关导出的快照。
+        </div>
+      </div>
+
+      {/* 第二重确认：第一重（wbConfirm）只讲覆盖，这一步把「登录可能失效」点透并要求显式表态。
+          焦点落在「取消」：不可恢复的覆盖操作，回车不该等于同意。导入在途时整个弹窗不可关闭。 */}
+      <Dialog open={pending !== null} onOpenChange={next => { if (!next && !importing) setPending(null) }}>
+        <DialogContent className='w-[min(480px,calc(100vw-48px))]' initialFocus={cancelRef}>
+          <DialogHeader>
+            <DialogTitle>导入备份快照 · 第 2/2 步</DialogTitle>
+          </DialogHeader>
+          <DialogBody>
+            <div className='danger-zone'>
+              <strong>即将整表替换账号与设置，此操作不可恢复。</strong>
+              {counts ? (
+                <>
+                  <br />
+                  快照内容：设置 {counts.kv ?? 0} 项 · 账号 {counts.accounts ?? 0} 条
+                  {exportedAt ? ` · 导出于 ${new Date(exportedAt).toLocaleString()}` : ''}
+                </>
+              ) : null}
+              <br />
+              快照里的登录令牌表会一并替换：<strong>你当前的登录令牌可能失效，导入后需要重新登录。</strong>
+              确定继续？
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <div className='mr-auto' />
+            <Button ref={cancelRef} variant='outline' disabled={importing} onClick={() => setPending(null)}>
+              取消
+            </Button>
+            <Button variant='destructive' disabled={importing} onClick={() => void onImportConfirm()}>
+              {importing ? '导入中…' : '确认覆盖导入'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </section>
+  )
+}
+
+/* ── 面板三：维护模式 ───────────────────────── */
+
+function MaintenancePanel() {
+  /** null = 还没读到（开关禁用）；读写都用这份数据，与 store 无关 */
+  const [enabled, setEnabled] = React.useState<boolean | null>(null)
+  const [busy, setBusy] = React.useState(false)
+
+  const refresh = React.useCallback(async () => {
+    try {
+      const data = await opsApi<{ enabled: boolean }>('/api/maintenance')
+      setEnabled(data.enabled)
+    } catch (error) {
+      toast(`读取维护模式状态失败：${dataError(error)}`, 'err')
+    }
+  }, [])
+  React.useEffect(() => { void refresh() }, [refresh])
+
+  async function onEnabledChange(next: boolean): Promise<void> {
+    setBusy(true)
+    try {
+      const data = await opsApi<{ enabled: boolean }>('/api/maintenance', { method: 'PUT', body: { enabled: next } })
+      setEnabled(data.enabled)
+      toast(next
+        ? '✅ 维护模式已开启：对外 API（/v1/*）已暂停，面板照常可用'
+        : '✅ 维护模式已关闭：对外 API（/v1/*）已恢复转发', 'ok')
+    } catch (error) {
+      toast(`保存失败：${dataError(error)}`, 'err')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const badge = enabled === null
+    ? <StatusBadge tone='idle'>检测中…</StatusBadge>
+    : enabled
+      ? <StatusBadge tone='bad'>维护中 · 对外 503</StatusBadge>
+      : <StatusBadge tone='ok'>正常转发</StatusBadge>
+
+  return (
+    <section className='panel'>
+      <PanelHead
+        title='维护模式'
+        tip='临时暂停对外转发服务的总闸：开启后所有 API 客户端打到 /v1/* 的请求都会立刻收到 503「系统维护中」（OpenAI 风格错误体，客户端能读懂并重试）；面板自己与 /api/* 管理接口不受影响 —— 管理员必须还能进面板把它关掉。'
+        badge={badge}
+        actions={<RefreshButton id='btn-maintenance-refresh' disabled={busy} onClick={() => void refresh()} />}
+      />
+      <div className='panel-body'>
+        <div className='retention-list'>
+          <SwitchRow
+            id='settings-maintenance-enabled'
+            label='开启维护模式（暂停对外转发，面板照常可用）'
+            checked={enabled ?? false}
+            disabled={enabled === null || busy}
+            onCheckedChange={next => void onEnabledChange(next)}
+          />
+          <div className='retention-row'>
+            <label>影响范围</label>
+            <span className='storage-line'>
+              <span className='storage-path'>/v1/* → 503 系统维护中 · 面板与 /api/* 照常</span>
+            </span>
+            <div className='hint'>
+              只拦对外转发面；面板浏览、设置修改、日志查看、本页的全部操作都不受影响。开关持久化在配置里，重启后仍保持。
+            </div>
+          </div>
+          <div className='retention-row'>
+            <label>典型用途</label>
+            <span className='storage-line'>
+              <span className='storage-path'>发版 / 数据迁移 / 故障排查时暂停对外服务</span>
+            </span>
+            <div className='hint'>
+              比如要更换数据库或排查账号池异常：先开维护挡掉新流量，等手头操作完成再关。客户端在维护期间收到的是明确的 503 维护提示，不是超时或莫名的 5xx。
+            </div>
+          </div>
+        </div>
+        <div className='hint retention-note'>
+          维护期间客户端侧表现为 503（type: maintenance_mode），一般会按各自的退避策略重试；长时间维护建议提前通知调用方。
+        </div>
+      </div>
+    </section>
+  )
+}
+
+/* ── 面板四：在线会话 ───────────────────────── */
+
+function SessionsPanel() {
+  const [data, setData] = React.useState<SessionsData | null>(null)
+  /** 正在吊销的那条会话 id（只禁用这一行的按钮，刷新不锁全表） */
+  const [revoking, setRevoking] = React.useState<string | null>(null)
+
+  const refresh = React.useCallback(async () => {
+    try {
+      setData(await opsApi<SessionsData>('/api/sessions/list'))
+    } catch (error) {
+      toast(`读取在线会话失败：${dataError(error)}`, 'err')
+    }
+  }, [])
+  React.useEffect(() => { void refresh() }, [refresh])
+
+  async function onRevoke(session: OpsSession): Promise<void> {
+    if (!data || session.sessionId === data.current) return
+    const ok = await dataAsk(
+      '强制下线该会话',
+      `将撤销会话 ${opsSessionShort(session.sessionId)} 的全部令牌：那个设备下一次操作就会收到 401，必须重新登录才能继续。\n只影响登录态，不删除该设备上的任何数据。`,
+      '确认强制下线',
+    )
+    if (!ok) return
+    setRevoking(session.sessionId)
+    try {
+      await opsApi<{ revoked: string }>('/api/sessions/revoke', { method: 'POST', body: { sessionId: session.sessionId } })
+      toast('✅ 已强制下线', 'ok')
+      await refresh()
+    } catch (error) {
+      toast(`下线失败：${dataError(error)}`, 'err')
+    } finally {
+      setRevoking(null)
+    }
+  }
+
+  const sessions = data?.sessions ?? []
+  const badge = data === null
+    ? <StatusBadge tone='idle'>检测中…</StatusBadge>
+    : <StatusBadge tone={sessions.length > 1 ? 'bad' : 'ok'}>{sessions.length} 个在线</StatusBadge>
+
+  return (
+    <section className='panel'>
+      <PanelHead
+        title='在线会话'
+        tip='当前活跃的面板登录会话清单：每个登录过的浏览器 / 设备一条，吊销即强制下线。会话标识是会话链 id（随机数），不是任何令牌本体，展示与引用都安全。'
+        badge={badge}
+        actions={<RefreshButton id='btn-sessions-refresh' disabled={revoking !== null} onClick={() => void refresh()} />}
+      />
+      <div className='panel-body'>
+        {data === null ? (
+          <div className='hint'>正在读取在线会话…</div>
+        ) : sessions.length === 0 ? (
+          <div className='hint'>当前没有活跃会话（桌面端无需登录时这里通常是空的）。</div>
+        ) : (
+          <div className='retention-list'>
+            {sessions.map((session, index) => {
+              const isCurrent = data.current !== null && session.sessionId === data.current
+              return (
+                <div className='retention-row' key={session.sessionId}>
+                  <label>会话 {index + 1}</label>
+                  <span className='storage-line'>
+                    {isCurrent ? <Badge variant='success'>本机</Badge> : null}
+                    <span className='storage-path' title={session.sessionId}>{opsSessionShort(session.sessionId)}</span>
+                    <span className='storage-path'>
+                      创建 {opsTimeText(session.createdAt)} · 最近活动 {opsAgoText(session.lastActivity)}
+                    </span>
+                    {isCurrent ? (
+                      // 当前会话不可吊销（后端同样 400 挡住）：走「安全」分区的退出登录才有完整清 cookie 流程
+                      <Button id='btn-session-self' variant='outline' disabled title='当前会话不能在这里吊销，请用「安全」分区的退出登录'>
+                        本机当前会话
+                      </Button>
+                    ) : (
+                      <Button
+                        id={`btn-session-revoke-${index + 1}`}
+                        variant='destructive'
+                        disabled={revoking !== null}
+                        onClick={() => void onRevoke(session)}
+                      >
+                        {revoking === session.sessionId ? '下线中…' : '强制下线'}
+                      </Button>
+                    )}
+                  </span>
+                  <div className='hint'>
+                    {isCurrent
+                      ? '这是你当前正在使用的会话，不能在这里吊销（会把你自己踢出面板）；要退出登录请用「安全」分区的退出登录。'
+                      : session.lastActivity
+                        ? `最近活动 ${opsTimeText(session.lastActivity)}。强制下线后该设备的下一次请求就是 401，需要重新登录。`
+                        : '该会话创建于本次运行之前（重启前的历史时刻拿不到），强制下线后需要重新登录。'}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+        <div className='hint retention-note'>
+          列表只显示仍有活令牌的会话；已过期或已登出的会话不会出现。「强制下线」撤销该会话整条刷新链并落盘，重新登录才会恢复。
+        </div>
+      </div>
+    </section>
+  )
+}
+
+/** 「备份与运维」分区的四个面板（顺序即阅读顺序：先兜底、再搬家、再挡流量、再看人） */
+function BackupOpsPane() {
+  return (
+    <>
+      <BackupSettingsPanel />
+      <SnapshotExportImportPanel />
+      <MaintenancePanel />
+      <SessionsPanel />
     </>
   )
 }
@@ -3604,26 +4339,58 @@ function SettingsPage() {
   const snap = useSettings()
   const panesRef = React.useRef<HTMLDivElement | null>(null)
 
+  // 「备份与运维」分区的选中态（本组件自持，不进 store —— 白名单在那两份文件里，
+  // 本分区只允许改当前文件，缘由见 OPS_CATEGORY 的说明）。
+  const [opsActive, setOpsActive] = React.useState(() => {
+    try { return localStorage.getItem(SETTINGS_CAT_KEY) === OPS_CATEGORY.id } catch { return false }
+  })
+
+  // store 的分类一旦真的变了（点其它分类、外部 showCategory，如更新面板的「去更新」），
+  // 备份分区就让位。只对比值、不监听 scrollReset：load() 重入设置页时 restoreCategory
+  // 会把 'backup' 存档打回 general，但值没变，不能把用户正看着的分区收掉。
+  const lastStoreCat = React.useRef(snap.category)
+  React.useEffect(() => {
+    if (snap.category !== lastStoreCat.current) {
+      lastStoreCat.current = snap.category
+      setOpsActive(false)
+    }
+  }, [snap.category])
+
   // 切换分类后把内容栏滚回顶部（旧实现是命令式写 scrollTop）：否则上一类的滚动位置会
   // 带到新分类上，打开「更新」却停在半截。scrollReset 每次 showCategory 都递增，
   // 于是「切回同一分类」（页面重入时 load → restoreCategory）同样会滚回顶部。
+  // 备份分区的切换不经过 store，把自己的选中态也挂进来。
   React.useEffect(() => {
     const panes = panesRef.current
     if (panes) panes.scrollTop = 0
-  }, [snap.scrollReset])
+  }, [snap.scrollReset, opsActive])
 
-  const paneClass = (cat: string): string => (snap.category === cat ? 'settings-pane active' : 'settings-pane')
+  const paneClass = (cat: string): string =>
+    !opsActive && snap.category === cat ? 'settings-pane active' : 'settings-pane'
+
+  /** 左栏点击的统一入口：备份分区走本组件的状态（偏好照写同一把键），其余照旧走 store */
+  function openCategory(cat: string): void {
+    if (cat === OPS_CATEGORY.id) {
+      setOpsActive(true)
+      try { localStorage.setItem(SETTINGS_CAT_KEY, cat) } catch { /* 存储不可用只影响下次启动 */ }
+    } else {
+      setOpsActive(false)
+      selectCategory(cat)
+    }
+  }
 
   return (
     <div className='settings-layout'>
       <nav className='settings-nav' id='settings-nav'>
-        {CATEGORIES.map(item => (
+        {NAV_CATEGORIES.map(item => (
           <button
             key={item.id}
             type='button'
-            className={snap.category === item.id ? 'settings-nav-item active' : 'settings-nav-item'}
+            className={(item.id === OPS_CATEGORY.id ? opsActive : !opsActive && snap.category === item.id)
+              ? 'settings-nav-item active'
+              : 'settings-nav-item'}
             data-cat={item.id}
-            onClick={() => selectCategory(item.id)}
+            onClick={() => openCategory(item.id)}
           >
             {/* 分类图标（icons.js）：与主侧栏同款 17px 图标盒，颜色随 currentColor
                 （选中态自动变主题色） */}
@@ -3669,6 +4436,10 @@ function SettingsPage() {
         </div>
         <div className={paneClass('deploy')} data-cat='deploy'>
           <DeployPane snap={snap} />
+        </div>
+        {/* 备份与运维：选中态在 SettingsPage 的 opsActive（不经 store，见上面说明） */}
+        <div className={opsActive ? 'settings-pane active' : 'settings-pane'} data-cat='backup'>
+          <BackupOpsPane />
         </div>
         <div className={paneClass('feedback')} data-cat='feedback'>
           <FeedbackPane />

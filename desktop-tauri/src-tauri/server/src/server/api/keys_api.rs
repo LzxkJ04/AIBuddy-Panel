@@ -188,6 +188,7 @@ pub async fn update_key(State(state): State<ServerState>, Path(id): Path<String>
 
 /// DELETE /api/keys/{id}
 pub async fn delete_key(State(state): State<ServerState>, Path(id): Path<String>) -> Response {
+    crate::server::api::audit_api::audit("apikey.delete", "删除 API Key");
     match api_keys::remove(&id) {
         Ok(()) => {
             let remaining = config::current().api_key_set();

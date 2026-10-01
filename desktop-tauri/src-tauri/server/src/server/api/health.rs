@@ -17,12 +17,20 @@
 //! 目录未刷新过时就是内置清单的条数，刷新后是远程清单的条数 ——
 //! 这个字段只反映「当前内存里的目录」，不触发刷新（刷新由启动流程与
 //! GET /v1/models 负责，/health 保持纯本地语义）。
+//!
+//! `channels` 是**每 provider 一键**的渠道健康（对照 Buddy2API 的
+//! health.channels，见 `channels_json`）：账号库的本地统计，纯只读。
+//! 门控形态（panel_gate / fail-closed 的 `{"status":"ok"}`）**不带**它 ——
+//! 公网上不泄漏渠道结构。
+
+use std::collections::BTreeMap;
 
 use axum::extract::State;
 use axum::response::Response;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::server::config;
+use crate::server::core::{custom_providers, providers};
 use crate::server::http::raw_json;
 use crate::server::ServerState;
 
@@ -90,5 +98,93 @@ pub async fn handle(State(state): State<ServerState>) -> Response {
         // 模型目录条数（对照 Node 的 `models: modelCatalog.list().length`）——
         // 切片 4 起是真值：目录未刷新过时是内置清单条数，刷新后是远程清单条数
         "models": state.models().count(),
+        // 每 provider 一键的渠道健康（对照 Buddy2API 的 health.channels）；
+        // 门控形态在上面提前返回，公网看不到这个结构
+        "channels": channels_json(&state),
     }))
+}
+
+/// `channels` 结构：`{ "<providerId>": {"accounts": N, "active": N, "loaded": bool} }`。
+///
+/// ── 数据来源 ────────────────────────────────────────────────
+/// 账号库的本地统计（纯只读、不发网络请求，与 /health 的其余字段同语义）：
+/// `store().list_accounts()` 一次快照（storage_api 同款读法），公开形态里
+/// `provider` / `enabled` 恒有（`store_view::public_account` 统一注入，
+/// provider 缺失时按 workbuddy 兜底），按 provider 分组计数即可：
+///   - `accounts`：该 provider 名下账号**总数**（含禁用，与账号页分组标题同口径）；
+///   - `active`：其中 `enabled` 为真的条数（选路会跳过禁用账号，
+///     「这一家现在还有几发可用」看它）；
+///   - `loaded`：账号库是否打开（`db()` 可用）。库打不开时各计数都是回落
+///     的 0，与「真的没有账号」无法区分 —— 与 storage_api 的 `available`
+///     同一处理：让读者知道「0 是没读到，不是没有」。
+///
+/// ── 为什么 0 也列出 ─────────────────────────────────────────
+/// 照 Buddy2API 的 health.channels 全渠道罗列：键集取「内置注册表
+/// （`providers::PROVIDERS`，顺序稳定）∪ 自定义提供商 ∪ 账号里出现过的
+/// 陌生 id」—— 注册了的渠道哪怕一个账号都没有也在场（监控一眼看出
+/// 「这家还没配」），只列有账号的家会让「渠道消失」与「账号清空」混淆。
+/// 陌生 id 照 `provider_summary` 的容错口径原样透出，不静默吞掉。
+///
+/// 键序：serde_json 的 Map 按字典序输出（本 crate 未开 preserve_order），
+/// 与注册表顺序无关但**稳定**，监控按键取值不受影响。
+fn channels_json(state: &ServerState) -> Value {
+    let snapshot = state.store().list_accounts();
+    let empty = Vec::new();
+    let accounts = snapshot
+        .get("accounts")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    // (总数, 启用数)，按 provider 分组 —— BTreeMap 只为去重，键序由上面的
+    // 键集合并顺序决定
+    let mut totals: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for record in accounts {
+        let provider = record
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or(crate::server::core::providers::DEFAULT_PROVIDER_ID);
+        let enabled = record.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+        let entry = totals.entry(provider.to_string()).or_insert((0, 0));
+        entry.0 += 1;
+        if enabled {
+            entry.1 += 1;
+        }
+    }
+    let loaded = state.db().is_some();
+    let mut channels = Map::new();
+    for meta in providers::PROVIDERS {
+        insert_channel(&mut channels, meta.id, &totals, loaded);
+    }
+    for custom in custom_providers::list() {
+        if let Some(id) = custom.get("id").and_then(Value::as_str) {
+            insert_channel(&mut channels, id, &totals, loaded);
+        }
+    }
+    // 账号里出现、但不属于上面两份清单的 id（手改数据塞进来的陌生家）：
+    // 照列而不是丢弃 —— 渠道健康要对得上账号页看到的分组
+    for id in totals.keys() {
+        insert_channel(&mut channels, id, &totals, loaded);
+    }
+    Value::Object(channels)
+}
+
+/// 把一个 provider 的渠道行写进 `channels`（已有同名键不覆盖 —— 内置注册表
+/// 与自定义清单理论不相交，这里只为防御将来清单重叠时后写覆盖先写）。
+fn insert_channel(
+    channels: &mut Map<String, Value>,
+    id: &str,
+    totals: &BTreeMap<String, (usize, usize)>,
+    loaded: bool,
+) {
+    if channels.contains_key(id) {
+        return;
+    }
+    let (accounts, active) = totals.get(id).copied().unwrap_or((0, 0));
+    channels.insert(
+        id.to_string(),
+        json!({
+            "accounts": accounts as u64,
+            "active": active as u64,
+            "loaded": loaded,
+        }),
+    );
 }

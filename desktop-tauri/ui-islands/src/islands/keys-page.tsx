@@ -4,6 +4,7 @@ import {
   Badge,
   Button,
   buttonVariants,
+  Checkbox,
   Dialog,
   DialogBody,
   DialogContent,
@@ -34,6 +35,18 @@ import { TableFooter, useClientPaging } from './table-shell'
  * keys 带明文 key 与掩码）。写接口都返回最新列表，就地替换后重绘；列表默认显示掩码，
  * 每行可单独「显示」明文并复制（复制走 clipboard.js 的 data-copy 委托）。
  * 「可用提供商 / 可用模型」两个白名单**空数组 = 不限制**（见后端 core::api_keys）。
+ *
+ * ── 额度与有效期：直连 /api/keys/{id}/quota ─────────────────
+ * 配额与到期**不在** PATCH /api/keys 里（后端 keys_api 不透传这两个字段），
+ * 唯一写入口是 PUT /api/keys/{id}/quota（字段级三态：键缺失 = 不动 / null =
+ * 清除 / 正整数 = 设定）。两份桥（bridge.rs / web_shim.rs）都还没有这组方法，
+ * 而面板与网关**同源 HTTP**，fetch 直连在桌面与网页两种形态都能用（与设置页
+ * notifyApi 同一模式，见 quotaApi 的说明）。已用 Token 只有这组端点给：列表
+ * （public_json）只带 quotaTokens / expiresAt 两个「有没有设」的字段，所以
+ * 读数按需逐把补拉（见 quotaMap 的 effect）。PUT 的响应是**生效后**的全量
+ * 读数，就地更新该行即可，不必再 GET。行内展示对照 one-api 令牌页：设了
+ * 配额给进度条 + 已用/总量，不限额给灰字（省略与「没读到」长得一样），过期
+ * 红字、临期黄字 —— 详见 KeyQuotaArea 的说明。
  *
  * ── 两个多选走组件库的 MultiSelect ───────────────────────────
  * 「可用提供商 / 可用模型」是**受控**的 React state（不再渲染原生 `<select multiple>`
@@ -72,10 +85,60 @@ type KeyEntry = {
   /** 白名单，**空数组 = 不限制** */
   allowedProviders?: string[]
   allowedModels?: string[]
+  /** 配额总量（Token）；null / 缺省 = 不限额（public_json 现在带这两个字段） */
+  quotaTokens?: number | null
+  /** 到期时刻（毫秒时间戳）；null / 缺省 = 永久有效 */
+  expiresAt?: number | null
+}
+
+/**
+ * `GET/PUT /api/keys/{id}/quota` 的响应体（后端 key_quota_api::quota_json）。
+ * `usedTokens` / `remainingTokens` 只有这组端点给：列表（public_json）只带
+ * 「有没有设」的两个字段。`remainingTokens` 不限额时是 null；`expired` 是
+ * 服务端的过期判定（与转发准入同一口径）。
+ */
+type KeyQuota = {
+  id?: string
+  name?: string
+  enabled?: boolean
+  /** 配额总量；null = 不限额 */
+  quotaTokens?: number | null
+  usedTokens?: number | null
+  remainingTokens?: number | null
+  /** 到期时刻（毫秒）；null = 永久 */
+  expiresAt?: number | null
+  expired?: boolean
 }
 
 /** 「可用提供商」的候选项：后端注册表摘要（项目禁止维护第二份 provider 清单） */
 type ProviderOption = { id: string; label?: string }
+
+/**
+ * `GET /api/codex/status` 的响应（后端 api::codex_api，Codex CLI 一键写入的
+ * 检测步）。三个布尔是 ~/.codex/ 里 config.toml / auth.json / *.bak 的存在性；
+ * `serverUrl` 是后端从请求 Host 还原的面板 origin（base_url 以它为默认值），
+ * `codexDir` 是 ~/.codex 的绝对路径（主目录定位不到时为 null）。
+ */
+type CodexStatus = {
+  configExists?: boolean
+  authExists?: boolean
+  backupExists?: boolean
+  serverUrl?: string
+  codexDir?: string | null
+}
+
+/** `POST /api/codex/setup` 的响应：写入/跳过清单与备份名清单 */
+type CodexSetupResult = {
+  /** 实际写入的文件名（config.toml / auth.json） */
+  written?: string[]
+  /** 被跳过的文件与原因（如 apiKey 缺失时跳过 auth.json） */
+  skipped?: { file?: string; reason?: string }[]
+  /** 本次发生的备份名（config.toml.bak / auth.json.bak） */
+  backups?: string[]
+  codexDir?: string
+  /** 实际写进 config.toml 的 base_url（归一后的 {baseUrl}/v1） */
+  baseUrl?: string
+}
 
 /** 四个接口的响应；`created` 只在 POST 的响应里（新建后要立刻展开它） */
 type KeysPayload = {
@@ -165,6 +228,71 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, ch => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[ch] ?? ch))
+}
+
+/**
+ * 额度接口的直连出口（`GET/PUT /api/keys/{id}/quota`）。
+ *
+ * 这组端点两份桥（bridge.rs / web_shim.rs）都还没有专属方法，而桌面端与网页端
+ * 的面板**都是同源 HTTP**（桌面端的网关跑在应用进程内、面板由它伺服），fetch
+ * 直连在两种形态下都能用 —— 与设置页通知接口（settings-model 的 notifyApi）
+ * 是同一模式。响应按网关的 `{success, data}` 信封拆包：非 2xx 或 `success ===
+ * false` 抛 Error（文案取 error / message / msg），有 `data` 键取 `data`。
+ * 401 的静默续期不在本函数里 —— 那是桥的职责，直连绕过了它；会话过期时这里
+ * 只会如实报错，用户重新登录后一切恢复。
+ */
+async function quotaApi(method: 'GET' | 'PUT', id: string, body?: unknown): Promise<KeyQuota> {
+  const init: RequestInit = { method, headers: { Accept: 'application/json' } }
+  if (method === 'PUT') {
+    init.headers = { ...init.headers, 'Content-Type': 'application/json' }
+    init.body = JSON.stringify(body ?? {})
+  }
+  const response = await fetch(`/api/keys/${encodeURIComponent(id)}/quota`, init)
+  const text = await response.text()
+  let payload: unknown = null
+  try { payload = text ? JSON.parse(text) : null } catch { /* 非 JSON：按原文报错 */ }
+  const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null
+  const success = typeof record?.success === 'boolean' ? record.success : undefined
+  if (!response.ok || success === false) {
+    const detail = record
+      ? (record.error ?? record.message ?? record.msg ?? `HTTP ${response.status}`)
+      : (text.trim() || `HTTP ${response.status}`)
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (record && Object.prototype.hasOwnProperty.call(record, 'data') ? record.data : payload) as KeyQuota
+}
+
+/**
+ * Codex 接口的直连出口（`GET /api/codex/status`、`POST /api/codex/setup`）。
+ *
+ * 与上面的 quotaApi 同一模式：这组端点两份桥（bridge.rs / web_shim.rs）都还没有，
+ * 而面板与网关**同源 HTTP**，fetch 直连在桌面与网页两种形态下都能用。响应按
+ * 网关的 `{success, data}` 信封拆包（与 quotaApi 逐字同口径）；401 的静默续期
+ * 同样不在本函数里 —— 会话过期时如实报错，用户重新登录后一切恢复。
+ */
+async function codexApi<T>(
+  method: 'GET' | 'POST',
+  path: '/api/codex/status' | '/api/codex/setup',
+  body?: unknown,
+): Promise<T> {
+  const init: RequestInit = { method, headers: { Accept: 'application/json' } }
+  if (method === 'POST') {
+    init.headers = { ...init.headers, 'Content-Type': 'application/json' }
+    init.body = JSON.stringify(body ?? {})
+  }
+  const response = await fetch(path, init)
+  const text = await response.text()
+  let payload: unknown = null
+  try { payload = text ? JSON.parse(text) : null } catch { /* 非 JSON：按原文报错 */ }
+  const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null
+  const success = typeof record?.success === 'boolean' ? record.success : undefined
+  if (!response.ok || success === false) {
+    const detail = record
+      ? (record.error ?? record.message ?? record.msg ?? `HTTP ${response.status}`)
+      : (text.trim() || `HTTP ${response.status}`)
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+  return (record && Object.prototype.hasOwnProperty.call(record, 'data') ? record.data : payload) as T
 }
 
 /* ─── 常量与列声明 ───────────────────────────── */
@@ -788,10 +916,467 @@ function QuickAccessModal({ target, onClose }: { target: KeyEntry; onClose: () =
               <p>⚠ 二维码内含 Key 明文，转发截图前先想想它会落到谁手里。</p>
             </DialogSection>
           ) : null}
+          {/* Codex CLI 一键写入：keyValue 只用来预填 Key 输入框，缺失也能用
+              （用户可以自己粘贴另一把 Key），所以不再按 keyValue 条件渲染 */}
+          <CodexWriteSection keyValue={keyValue} />
         </DialogBody>
         <DialogFooter>
           <div className='mr-auto' />
           <Button variant='outline' onClick={onClose}>关闭</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/* ─── Codex CLI 一键写入（照 Buddy2API 的 /admin/codex/setup 形态）── */
+
+/** 写入动作的三段状态：先检测 ~/.codex 现状 → 确认并填 Key → 展示结果 */
+type CodexPhase = 'idle' | 'ready' | 'done'
+
+/**
+ * 快速接入弹窗里的「Codex CLI 一键写入」分区。
+ *
+ * 流程照 Buddy2API 的 /admin/codex/setup：点按钮先 GET status，把 ~/.codex 里
+ * 已有的文件与「将做 .bak 备份」如实列出来，用户核对 / 粘贴 API Key（掩码输入，
+ * 默认预填本把 Key 的明文，可清空 —— 留空则只写 config、跳过 auth），POST setup
+ * 后展示写入 / 跳过清单、.bak 备份位置与手动恢复方法。直连 /api/codex/*（见
+ * codexApi），不经过桥。
+ *
+ * 无键盘快捷键（不绑 Enter 提交）：写入的是用户本机另一个应用的配置文件，
+ * 多一步显式点击是刻意的。
+ */
+function CodexWriteSection({ keyValue }: { keyValue: string }) {
+  const [phase, setPhase] = React.useState<CodexPhase>('idle')
+  const [status, setStatus] = React.useState<CodexStatus | null>(null)
+  const [apiKey, setApiKey] = React.useState('')
+  /** 掩码显示开关（默认掩码；眼睛按钮切明文，与 Key 行同一意图） */
+  const [shown, setShown] = React.useState(false)
+  const [result, setResult] = React.useState<CodexSetupResult | null>(null)
+  const [busy, setBusy] = React.useState(false)
+  const [note, setNote] = React.useState('')
+
+  /** 第一步：读 ~/.codex 现状（成功才进入确认步，失败只写 note 不切阶段） */
+  async function prepare(): Promise<void> {
+    if (busy) return
+    setBusy(true)
+    setNote('检测 ~/.codex 现状…')
+    try {
+      const next = await codexApi<CodexStatus>('GET', '/api/codex/status')
+      setStatus(next)
+      // Key 默认预填本把 Key 的明文（快速接入的意义就是免替换）；已填过的不覆盖
+      setApiKey(current => current || keyValue)
+      setPhase('ready')
+      setNote('')
+    } catch (error) {
+      setNote(`检测失败：${errorMessage(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** 第二步：写入（Key 留空则不带 apiKey 键 → 后端跳过 auth.json，见其模块头） */
+  async function write(): Promise<void> {
+    if (busy) return
+    setBusy(true)
+    setNote('正在写入…')
+    try {
+      const key = apiKey.trim()
+      const next = await codexApi<CodexSetupResult>('POST', '/api/codex/setup', {
+        // baseUrl 不带：后端按请求 origin 兜底（与 status 的 serverUrl 同口径）
+        ...(key ? { apiKey: key } : {}),
+      })
+      setResult(next)
+      setPhase('done')
+      setNote('')
+      toast('✅ Codex 配置已写入，重启 Codex 后生效')
+    } catch (error) {
+      setNote(`写入失败：${errorMessage(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const dir = result?.codexDir || status?.codexDir || '~/.codex'
+  const serverUrl = status?.serverUrl || window.location.origin
+
+  return (
+    <DialogSection>
+      <h3>Codex CLI 一键写入</h3>
+      {phase === 'idle' ? (
+        <>
+          <p>
+            把本网关一键写入本机 <b>Codex CLI</b> 的配置：写 <code>~/.codex/config.toml</code>
+            （model_provider 指向本网关的 OpenAI 兼容端点）与 <code>~/.codex/auth.json</code>
+            （OPENAI_API_KEY）。已存在的文件会先备份为同名 <code>.bak</code>，绝不覆盖丢失。
+          </p>
+          <div className='flex flex-wrap items-center gap-2.5'>
+            <Button variant='default' disabled={busy} onClick={() => void prepare()}>
+              一键写入 Codex 配置
+            </Button>
+            <span className='text-[11.5px] text-muted-foreground'>
+              先检测本机 ~/.codex 现状，确认后才会写入。
+            </span>
+          </div>
+        </>
+      ) : null}
+      {phase === 'ready' && status ? (
+        <>
+          <p>
+            写入位置：<code>{dir}</code>；base_url 将写为 <code>{serverUrl}/v1</code>
+            （跨机访问时 Codex 连不上这里，请改用网关所在主机的地址）。
+          </p>
+          <ul className='m-0 list-disc pl-5 text-[12px] leading-[1.7]'>
+            <li>
+              config.toml：
+              {status.configExists ? '已存在 —— 写入前会先备份为 config.toml.bak' : '不存在 —— 将新建'}
+            </li>
+            <li>
+              auth.json：
+              {status.authExists ? '已存在 —— 写入前会先备份为 auth.json.bak' : '不存在 —— 将新建'}
+            </li>
+            {status.backupExists ? (
+              <li>已存在 .bak 备份 —— 本次写入会用当前内容覆盖旧备份（.bak 保留的是最近一次写入前的状态）</li>
+            ) : null}
+          </ul>
+          <div className='keycell'>
+            <Label htmlFor='codex-api-key' className='text-[12.5px] whitespace-nowrap text-subtle'>
+              API Key（写入 auth.json）
+            </Label>
+            <Input id='codex-api-key' type={shown ? 'text' : 'password'}
+              placeholder='粘贴网关 Key；留空则跳过 auth.json'
+              autoComplete='off' spellCheck={false} value={apiKey} disabled={busy}
+              onChange={event => setApiKey(event.currentTarget.value)} />
+            <Button size='icon-xs' variant='ghost'
+              aria-label={shown ? '隐藏 API Key 明文' : '显示 API Key 明文'}
+              title={shown ? '隐藏 API Key 明文' : '显示 API Key 明文'}
+              onClick={() => setShown(value => !value)}>
+              {shown ? '🙈' : '👁'}
+            </Button>
+          </div>
+          <p className='text-[11.5px] text-muted-foreground'>
+            默认预填本把 Key 的明文，可清空后另贴；留空则只写 config.toml、跳过 auth.json
+            （Codex 沿用现有登录方式）。写入完成后需重启 Codex CLI 才会生效。
+          </p>
+          <div className='flex flex-wrap items-center gap-2.5'>
+            <Button variant='outline' disabled={busy} onClick={() => setPhase('idle')}>取消</Button>
+            <Button variant='default' disabled={busy} onClick={() => void write()}>写入配置</Button>
+          </div>
+        </>
+      ) : null}
+      {phase === 'done' && result ? (
+        <>
+          <p>写入完成：</p>
+          <ul className='m-0 list-disc pl-5 text-[12px] leading-[1.7]'>
+            {(result.written ?? []).map(name => (
+              <li key={`w-${name}`}>✅ 已写入 <code>{name}</code></li>
+            ))}
+            {(result.skipped ?? []).map(item => (
+              <li key={`s-${item.file ?? '未知'}`}>
+                跳过 <code>{item.file || '未知文件'}</code>（{item.reason || '原因未说明'}）
+              </li>
+            ))}
+          </ul>
+          {result.backups?.length ? (
+            <p className='text-[11.5px] text-muted-foreground'>
+              原文件已备份为 {result.backups.join('、')}（位于 <code>{dir}</code>）。
+              如需恢复：删除对应的新文件，把 <code>.bak</code> 改回原名即可
+              （例如 <code>config.toml.bak</code> → <code>config.toml</code>）。
+            </p>
+          ) : (
+            <p className='text-[11.5px] text-muted-foreground'>
+              本次没有覆盖任何已有文件（新建的配置无需备份）。
+            </p>
+          )}
+          <p className='text-[11.5px] text-muted-foreground'>
+            Codex CLI 重启后生效：退出 Codex（含 IDE 插件里的 Codex 会话）再重新打开即可。
+          </p>
+          <Button variant='outline' disabled={busy}
+            onClick={() => { setResult(null); setPhase('idle') }}>
+            重新检测
+          </Button>
+        </>
+      ) : null}
+      <div className='min-h-[18px] text-[11.5px] text-muted-foreground'>{note}</div>
+    </DialogSection>
+  )
+}
+
+/* ─── 额度与有效期：换算与文案 ───────────────── */
+
+/** Token 数的展示口径：千分位（输入框收原始整数，展示带分隔符，四舍五入防浮点尾巴） */
+function formatTokens(value: number | null | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.round(value).toLocaleString('zh-CN')
+    : '—'
+}
+
+/** 临期阈值：到期剩多久内算「临期」（黄字提醒）；真过期另有红字 */
+const EXPIRY_SOON_DAYS = 7
+
+/** 毫秒 → 面板时间文案：优先 app.js 的 formatTime（与创建时间列同一格式），桥不在则本地化 */
+function formatExpiry(ms: number): string {
+  return shared().wbApp?.formatTime?.(ms) || new Date(ms).toLocaleString('zh-CN', { hour12: false })
+}
+
+/** 到期一行的三态配色（值全走 tokens，深浅主题自动跟随） */
+type ExpiryTone = 'danger' | 'warn' | 'muted'
+
+const EXPIRY_COLOR: Record<ExpiryTone, string> = {
+  danger: 'var(--danger)',
+  warn: 'var(--warn)',
+  muted: 'var(--text-3)',
+}
+
+/** 进度条条体的三态配色（同上） */
+const BAR_COLOR: Record<'primary' | 'warn' | 'danger', string> = {
+  primary: 'var(--primary)',
+  warn: 'var(--warn)',
+  danger: 'var(--danger)',
+}
+
+/**
+ * 到期一行的文案与配色。过期判定以后端 `expired` 字段为准（与转发准入同一
+ * 口径），没有读数时（回落列表自带字段）退到本地时钟比较 —— 桌面单机场景
+ * 两者差不了几秒。`expiresAt` 为 null（永久）返回 null，由调用方给「永久有效」。
+ */
+function expiryView(expiresAt: number | null, expired?: boolean): { text: string; tone: ExpiryTone } | null {
+  if (expiresAt === null) return null
+  const left = expiresAt - Date.now()
+  if (expired === true || left <= 0) {
+    return { text: `已过期（${formatExpiry(expiresAt)}）`, tone: 'danger' }
+  }
+  // 向上取整：还剩 0.1 天也报「1 天后过期」，不报 0
+  const days = Math.ceil(left / 86400000)
+  if (days <= EXPIRY_SOON_DAYS) {
+    return { text: `${days} 天后过期（${formatExpiry(expiresAt)}）`, tone: 'warn' }
+  }
+  return { text: `${formatExpiry(expiresAt)} 到期`, tone: 'muted' }
+}
+
+/** 进度条配色：剩余比例 <10% 红、<20% 黄，其余主色（任务口径） */
+function quotaTone(used: number, quota: number): 'primary' | 'warn' | 'danger' {
+  if (!(quota > 0)) return 'danger'
+  const remaining = Math.max(quota - used, 0) / quota
+  if (remaining < 0.1) return 'danger'
+  if (remaining < 0.2) return 'warn'
+  return 'primary'
+}
+
+/** 毫秒 → datetime-local 输入框的值（本地时区 YYYY-MM-DDTHH:mm；构造不出给空串） */
+function msToLocalInputValue(ms: number | null | undefined): string {
+  const date = ms == null ? null : new Date(ms)
+  if (!date || Number.isNaN(date.getTime())) return ''
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+/* ─── 行内额度区（进度条 / 不限额 / 到期）────────── */
+
+/**
+ * Key 行内的「额度」小区域（挂在 Key 列 keycell 下方）。
+ *
+ * 对照 one-api 令牌页的口径：设了配额给进度条 + 已用/总量（unlimited 给一行
+ * 「无限额度」文字），到期过期红字 —— 本页把两者合进一个小区块。配色全走
+ * tokens：剩余 <20% --warn、<10% --danger，过期红字、临期（7 天内）黄字；
+ * 未设配额显示「不限额」灰字 —— 省略与「没读到」长得一样，所以哪怕不限额也
+ * 要写出来（与 restrictionText 同一考虑）。
+ *
+ * 数据源 quotaMap 优先（带已用读数），还没读到 / 读失败时回落列表自带的
+ * quotaTokens / expiresAt：进度条要已用数，没有就只给文字，**不摆一条 0% 的
+ * 空条冒充「还没用」**。自绘进度条而不是组件库 Progress：那件的指示器配色
+ * 锁在 bg-primary，无法从外部按阈值换 --warn / --danger；role/aria 在这里
+ * 手工补齐（与 Base UI 的 Progress 同一组无障碍属性）。
+ */
+function KeyQuotaArea({ entry, quota }: { entry: KeyEntry; quota: KeyQuota | undefined }) {
+  const read = quota ?? null
+  // 读数在手以读数为准（ ?? 链会把「读数说 null」误回落到列表字段，必须分叉）
+  const quotaTokens = read ? read.quotaTokens ?? null : entry.quotaTokens ?? null
+  const expiresAt = read ? read.expiresAt ?? null : entry.expiresAt ?? null
+  const used = read?.usedTokens ?? null
+  const expired = read?.expired
+
+  return (
+    <div
+      className='flex min-w-0 flex-col gap-[3px] text-[11.5px] leading-[1.5]'
+      title='配额按 Key 维度累计转发 Token 用量，用尽后这把 Key 的请求会被拒绝；到期后 Key 立即失效。'
+    >
+      {quotaTokens === null ? (
+        // 未设配额：不限额也要写出来；已用读数在手时顺带展示（one-api 不限额度也显示已用）
+        <div className='text-[var(--text-3)]'>
+          不限额{used !== null ? ` · 已用 ${formatTokens(used)} tokens` : ''}
+        </div>
+      ) : used === null ? (
+        // 有配额但已用数还没读到（读数在途 / 读失败）：给文字，不给 0% 空条
+        <div className='text-[var(--text-3)]'>限额 {formatTokens(quotaTokens)} tokens · 已用统计待读</div>
+      ) : (
+        <>
+          <div
+            role='progressbar'
+            aria-label={`额度使用 ${formatTokens(used)} / ${formatTokens(quotaTokens)} tokens`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(Math.min(Math.max(used / quotaTokens, 0), 1) * 100)}
+            className='h-[5px] w-full overflow-hidden rounded-[var(--r-pill)] bg-[var(--surface-3)]'
+          >
+            {/* used 可能越过配额（超用），宽度封顶 100% */}
+            <div
+              className='h-full rounded-[inherit] transition-[width] duration-300 ease-out'
+              style={{
+                width: `${Math.min(Math.max(used / quotaTokens, 0), 1) * 100}%`,
+                background: BAR_COLOR[quotaTone(used, quotaTokens)],
+              }}
+            />
+          </div>
+          <div className='tabular-nums'>
+            已用 {formatTokens(used)} / {formatTokens(quotaTokens)}
+            <span className='text-[var(--text-3)]'> tokens · 剩余 {formatTokens(Math.max(quotaTokens - used, 0))}</span>
+          </div>
+        </>
+      )}
+      {(() => {
+        const view = expiryView(expiresAt, expired)
+        if (!view) return <div className='text-[var(--text-3)]'>永久有效</div>
+        return <div style={{ color: EXPIRY_COLOR[view.tone] }}>{view.text}</div>
+      })()}
+    </div>
+  )
+}
+
+/* ─── 额度管理弹窗（配额 / 有效期 / 重置已用）────── */
+
+type QuotaModalProps = {
+  target: KeyEntry
+  /** 行内已拉到的读数（带已用数）；还没读到时给 undefined，初值回落列表自带字段 */
+  quota: KeyQuota | undefined
+  onClose: () => void
+  /** PUT 返回**生效后**的全量读数（后端契约），交给父级就地更新，不必再 GET */
+  onSaved: (next: KeyQuota) => void
+}
+
+function QuotaModal({ target, quota, onClose, onSaved }: QuotaModalProps) {
+  // 初值只在挂载时算一次：弹窗每次打开都是新实例（有目标才渲染），不会陈旧
+  const [quotaText, setQuotaText] = React.useState(() => {
+    const initial = quota?.quotaTokens ?? target.quotaTokens ?? null
+    return initial === null ? '' : String(initial)
+  })
+  const [expiryText, setExpiryText] = React.useState(
+    () => msToLocalInputValue(quota?.expiresAt ?? target.expiresAt ?? null),
+  )
+  const [resetUsed, setResetUsed] = React.useState(false)
+  const [status, setStatus] = React.useState('')
+  const [saving, setSaving] = React.useState(false)
+  /** 在途守卫：命令式的关闭判定（Esc / 点遮罩）必须能**同步**读到它（KeyModal 同款） */
+  const savingRef = React.useRef(false)
+
+  /** 收尾：解除在途守卫（写两处，避免两边漂移） */
+  function stopSaving(): void {
+    savingRef.current = false
+    setSaving(false)
+  }
+
+  async function save(): Promise<void> {
+    if (savingRef.current) return
+    // 先校验再置忙（与 KeyModal 同序）：非法输入不动在途守卫
+    const quotaInput = quotaText.trim()
+    if (quotaInput && (!/^\d+$/.test(quotaInput) || Number(quotaInput) <= 0)) {
+      setStatus('配额必须是正整数（Token 个数）；留空表示不限额')
+      return
+    }
+    const expiryInput = expiryText.trim()
+    let expiresAt: number | null = null
+    if (expiryInput) {
+      // datetime-local 的值无时区后缀，new Date 按本地时区解析 —— 与展示口径一致
+      const parsed = new Date(expiryInput).getTime()
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setStatus('到期时间无效，请重新选择；留空表示永久有效')
+        return
+      }
+      expiresAt = parsed
+    }
+    savingRef.current = true
+    setSaving(true)
+    setStatus('保存中…')
+    try {
+      // 字段级三态里本弹窗只用两态：每次都带当前值**整表回传**（数字 / null），
+      // 「键缺失 = 不动」留给只想重置用量的提交 —— 后端两种提交都安全
+      const next = await quotaApi('PUT', target.id, {
+        quotaTokens: quotaInput ? Number(quotaInput) : null,
+        expiresAt,
+        // 缺省不带这个键 = 不动已用计数（后端按「有没有这个键」判定）
+        ...(resetUsed ? { resetUsed: true } : {}),
+      })
+      stopSaving()
+      onSaved(next)
+      onClose()
+      toast('✅ 额度已保存')
+    } catch (error) {
+      setStatus(`保存失败：${errorMessage(error)}`)
+      stopSaving()
+    }
+  }
+
+  const used = quota?.usedTokens ?? null
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(next, eventDetails) => {
+        // 与 KeyModal 同一判定：保存中拒绝关闭必须走 eventDetails.cancel()
+        if (next) return
+        if (savingRef.current) {
+          eventDetails.cancel()
+          return
+        }
+        onClose()
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>额度管理 · {target.name || '未命名'}</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          <DialogSection>
+            <div className='flex flex-wrap items-center gap-2.5'>
+              <Label htmlFor='key-quota-input' className='text-[12.5px] whitespace-nowrap text-subtle'>配额 Token 数</Label>
+              <Input id='key-quota-input' type='text' inputMode='numeric' placeholder='留空 = 不限额'
+                autoComplete='off' className='max-w-[220px]' value={quotaText}
+                onChange={event => setQuotaText(event.currentTarget.value)} />
+            </div>
+            <p className='text-[11.5px] text-muted-foreground'>
+              配额按 <b>Key 维度</b>累计转发 Token 用量（所有经这把 Key 的请求加总），用尽后这把 Key
+              的请求会被拒绝。留空表示不限额。{used !== null ? `当前已用 ${formatTokens(used)} tokens。` : ''}
+            </p>
+            <div className='flex flex-wrap items-center gap-2.5'>
+              <Label htmlFor='key-expiry-input' className='text-[12.5px] whitespace-nowrap text-subtle'>到期时间</Label>
+              <Input id='key-expiry-input' type='datetime-local' className='max-w-[220px]'
+                value={expiryText} onChange={event => setExpiryText(event.currentTarget.value)} />
+            </div>
+            <p className='text-[11.5px] text-muted-foreground'>
+              留空表示永久有效；到期后这把 Key 立即失效（已排队的请求也会被拒）。
+            </p>
+            {/* Checkbox 的关联用 <label> 包裹（组件库的 Checkbox 是 button 形态，
+                htmlFor 关联不上；点击文字切换与账号页批量栏同一手法） */}
+            <label className='flex cursor-pointer flex-wrap items-center gap-2'>
+              <Checkbox checked={resetUsed} onCheckedChange={next => setResetUsed(next === true)}
+                aria-label='保存时同时清零已用计数' />
+              <span className='text-[12.5px]'>保存时同时清零已用计数（重新开始计量）</span>
+            </label>
+            <p>
+              保存立即生效：改配额不清零已用（历史事实），勾选上面一项才会清零；两项留空 / 不勾
+              就按输入框里的值保存（空 = 清除该限制）。
+            </p>
+          </DialogSection>
+          <div className='min-h-[18px] text-[11.5px] text-muted-foreground'>{status}</div>
+        </DialogBody>
+        <DialogFooter>
+          <div className='mr-auto' />
+          <Button variant='outline' onClick={onClose} disabled={saving}>
+            取消
+          </Button>
+          <Button variant='default' disabled={saving} onClick={() => void save()}>
+            保存
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -832,11 +1417,22 @@ function KeysPage() {
    * 删掉时弹窗自动跟上（找不到条目就不渲染），不会拿着一份过期的明文继续展示。
    */
   const [quickId, setQuickId] = React.useState<string | null>(null)
+  /**
+   * 每把 Key 的额度读数（`GET /api/keys/{id}/quota`，按 id 收）：行内进度条与
+   * 到期展示的数据源。读不到（在途 / 失败）的 Key 行内回落列表自带的
+   * quotaTokens / expiresAt，只少进度条不少信息。
+   */
+  const [quotaMap, setQuotaMap] = React.useState<Record<string, KeyQuota>>({})
+  /** 额度管理弹窗：只存 key id，条目每次从最新列表里现查（与 quickId 同一手法） */
+  const [quotaId, setQuotaId] = React.useState<string | null>(null)
   /** 列设置改了 / 契约 render() 被调 → 强制重画（数据没变但可见列变了） */
   const [, setVersion] = React.useState(0)
 
   const pendingRef = React.useRef<Set<string>>(new Set())
   const loadingRef = React.useRef(false)
+  /** effect 里判断「哪些 Key 还没有读数」用：state 本体的镜像（effect 依赖只有 id 串） */
+  const quotaMapRef = React.useRef(quotaMap)
+  quotaMapRef.current = quotaMap
 
   const applyData = React.useCallback((next: KeysPayload | null) => {
     setData(next)
@@ -917,6 +1513,16 @@ function KeysPage() {
     )
   }
 
+  /**
+   * 额度保存成功：PUT 的响应是**生效后**的全量读数，就地更新该行（进度条 /
+   * 到期立即跟上）；列表里的 quotaTokens / expiresAt 也变了，重拉一次列表对齐
+   * —— 与写接口「返回最新列表就替换」的页面习惯同一方向。
+   */
+  const handleQuotaSaved = React.useCallback((id: string, next: KeyQuota) => {
+    setQuotaMap(prev => ({ ...prev, [id]: next }))
+    void loadPanel()
+  }, [loadPanel])
+
   /* ─── 挂载期的两件事：契约登记 + 列设置（见文件头）────── */
 
   React.useLayoutEffect(() => {
@@ -945,6 +1551,36 @@ function KeysPage() {
     if (shared().wbApp?.currentPage === 'keys') void loadPanel()
   }, [loadPanel])
 
+  /** 当前列表的 id 串（下面补拉 effect 的依赖；渲染段还用它现查弹窗目标） */
+  const idsKey = keysOf(data).map(item => item.id).join(',')
+
+  /**
+   * 额度读数的按需补拉：列表里出现还没有读数的 Key（首载 / 新建）就打一次
+   * `GET /api/keys/{id}/quota`。依赖是 **id 串**而不是数组引用 —— 行内启停等写
+   * 操作换来的新列表 id 集合没变，不重拉；额度只在弹窗里改，保存后走就地更新
+   * （见 handleQuotaSaved），这里自然不用跟。读数失败（旧版后端没有这组端点）
+   * 静默回落：Key 通常只有几把，失败也不弹错误风暴，行内少条进度条而已。
+   */
+  React.useEffect(() => {
+    if (!idsKey) return
+    const missing = idsKey.split(',').filter(id => !quotaMapRef.current[id])
+    if (!missing.length) return
+    let alive = true
+    void (async () => {
+      const results = await Promise.allSettled(missing.map(id => quotaApi('GET', id)))
+      if (!alive) return
+      setQuotaMap(prev => {
+        const next = { ...prev }
+        missing.forEach((id, index) => {
+          const result = results[index]
+          if (result.status === 'fulfilled') next[id] = result.value
+        })
+        return next
+      })
+    })()
+    return () => { alive = false }
+  }, [idsKey])
+
   /** 顶栏那枚是本页徽标的镜像（app.js 的 renderTopbarStatus 按 id 读文案与 data-tone）：
    *  数据一变就让它跟上，否则要等下一次主状态轮询（20 秒）才同步 */
   React.useEffect(() => {
@@ -963,6 +1599,8 @@ function KeysPage() {
   const badgeText = authRequired ? `已启用鉴权 · ${enabledCount} 把 Key 生效` : '未启用鉴权'
   /** 快速接入弹窗的目标（按 id 从最新列表现查，见 quickId 的说明） */
   const quickTarget = quickId ? keys.find(item => item.id === quickId) ?? null : null
+  /** 额度管理弹窗的目标（同上现查；读数从 quotaMap 里取，没有就回落列表字段） */
+  const quotaTarget = quotaId ? keys.find(item => item.id === quotaId) ?? null : null
 
   /** 一个单元格的内容（不含 <td> 外壳）；「某一列长什么样」只有这一处实现 */
   function cell(columnKey: string, k: KeyEntry, busyRow: boolean): React.ReactNode {
@@ -977,13 +1615,17 @@ function KeysPage() {
       case 'key': {
         const shown = revealed.has(k.id)
         return (
-          <div className='keycell'>
-            <code className='kv'>{shown ? k.key : k.masked}</code>
-            <Button size='sm' variant='ghost' onClick={() => toggleReveal(k.id)}>
-              {shown ? '隐藏' : '显示'}
-            </Button>
-            {/* data-copy 是 clipboard.js 的委托钩子 */}
-            <Button size='sm' variant='ghost' data-copy={k.key} title='复制 Key'>复制</Button>
+          // Key 列是全表最宽的一列，进度条放这里才铺得开（名称列还有限制摘要要摆）
+          <div className='flex min-w-0 flex-col gap-[6px]'>
+            <div className='keycell'>
+              <code className='kv'>{shown ? k.key : k.masked}</code>
+              <Button size='sm' variant='ghost' onClick={() => toggleReveal(k.id)}>
+                {shown ? '隐藏' : '显示'}
+              </Button>
+              {/* data-copy 是 clipboard.js 的委托钩子 */}
+              <Button size='sm' variant='ghost' data-copy={k.key} title='复制 Key'>复制</Button>
+            </div>
+            <KeyQuotaArea entry={k} quota={quotaMap[k.id]} />
           </div>
         )
       }
@@ -1005,6 +1647,9 @@ function KeysPage() {
             </Button>
             <Button size='sm' variant='ghost' disabled={busyRow} onClick={() => setModal({ key: k })}>
               可用范围
+            </Button>
+            <Button size='sm' variant='ghost' disabled={busyRow} onClick={() => setQuotaId(k.id)}>
+              额度管理
             </Button>
             <Button size='sm' variant='destructive' disabled={busyRow}
               onClick={() => void removeKey(k)}>
@@ -1088,7 +1733,9 @@ function KeysPage() {
             修改后立即生效，本程序自身会自动使用第一把启用的 Key。每把 Key 可单独限制
             <b>可用提供商</b>与<b>可用模型</b>（行内「可用范围」）：留空 = 不限制，两个都设时
             按交集生效 —— 被限制的模型对这把 Key 表现为「不存在」（拉 /v1/models 也看不到它），
-            提供它的家不在可用列表里时请求同样被拒。
+            提供它的家不在可用列表里时请求同样被拒。每把 Key 还可单独设
+            <b>配额</b>与<b>有效期</b>（行内「额度管理」）：配额按 Key 维度累计转发 Token
+            用量，用尽或到期后这把 Key 的请求都会被拒。
           </span>
         )}
         total={keys.length}
@@ -1118,6 +1765,15 @@ function KeysPage() {
 
       {quickTarget ? (
         <QuickAccessModal target={quickTarget} onClose={() => setQuickId(null)} />
+      ) : null}
+
+      {quotaTarget ? (
+        <QuotaModal
+          target={quotaTarget}
+          quota={quotaMap[quotaTarget.id]}
+          onClose={() => setQuotaId(null)}
+          onSaved={next => handleQuotaSaved(quotaTarget.id, next)}
+        />
       ) : null}
     </section>
   )

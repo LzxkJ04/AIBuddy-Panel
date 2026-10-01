@@ -157,10 +157,12 @@ pub async fn panel_login(
     if !access::verify_login(&username, password) {
         access::record_login_failure(addr.ip());
         logging::log("[Security]", &format!("❌ 面板登录失败（{}）", addr.ip()));
+        crate::server::api::audit_api::audit("panel.login.failed", &format!("IP {} 登录失败", addr.ip()));
         return management_error(401, "账号或密码不正确");
     }
     access::clear_login_failures(addr.ip());
     logging::log("[Security]", &format!("✅ 面板登录成功（{}）", addr.ip()));
+    crate::server::api::audit_api::audit("panel.login", &format!("用户 {} 从 {} 登录", username, addr.ip()));
     issue_response(access::IssuedSession::new_session())
 }
 
