@@ -572,6 +572,10 @@
   <script src="upgrade-panel.js"></script>
   <script src="js/prefs.js"></script>
   <script src="js/notify-center.js"></script>
+  <!-- 顶栏用户菜单：账号名 + 修改账号密码（POST /api/panel/password）+ 退出登录
+       （POST /api/panel/logout）。独立容器插在 #topbar-status 之前并 MutationObserver
+       自愈（app.js 会整体重写那个容器，同 notify-center 的约定）。 -->
+  <script src="js/user-menu.js"></script>
   <script src="js/shell.js"></script>
   <script src="js/tags-view.js"></script>
 </body>

@@ -48,3 +48,13 @@ pub async fn accounts_usage(state: &ServerState, query: &str) -> Response {
 pub async fn accounts_usage_snapshot() -> Response {
     ok_json(usage_query::snapshot())
 }
+
+/// GET /api/accounts/usage/packages
+///
+/// 逐启用 WorkBuddy 账号的**积分包构成**（每个积分包的总量/已用/剩余/到期时间），
+/// 「积分构成」页专用 —— `/api/accounts/usage` 的本家形状是积分简报三个数，
+/// 没有逐包明细（差异见 `usage_query::query_credit_packages` 的说明）。
+/// 每次点按钮都真打上游（get-user-resource），不走快照。
+pub async fn credit_packages(state: &ServerState) -> Response {
+    ok_json(usage_query::query_credit_packages(state.store()).await)
+}

@@ -239,6 +239,98 @@ fn snapshot_slot() -> &'static Mutex<Option<Value>> {
     SNAPSHOT.get_or_init(|| Mutex::new(None))
 }
 
+// ─── 积分包构成（仅 WorkBuddy，「积分构成」页专用）──────────────
+
+/// 逐启用 **WorkBuddy** 账号查询积分包构成，返回
+/// `{ results: [{id,name,editionType,usageLeft,usageUsed,usageTotal,expireAt,resources[],error}], skipped }`。
+///
+/// ── 为什么不走 `query_all`（/api/accounts/usage）──────────────
+/// 那条链对 WorkBuddy 转调适配器的 `query_credits_summary` —— 那是**积分简报**
+/// 三个数（totalLeft / planLeft / bonusLeft，账号页余额列的既有契约），**没有
+/// 逐包的 resources**。而「积分构成」页要的正是逐包明细（每个积分包的
+/// 总量/已用/剩余/到期时间），所以这里直接构造 `BillingService::query_usage`
+/// （get-user-resource，`billing/usage.rs` 里 resources 的唯一来源），与
+/// workbuddy 适配器构造的是同一个服务（见该文件 query_usage 的注释）。
+///
+/// ── 范围只有 WorkBuddy ──────────────────────────────────────
+/// 其他家的 usage 形状（wallets / subscription 等）本来就没有「积分包 + 到期」
+/// 的逐包概念，混进来只会得到一堆空 resources 行。非本家账号计入 skipped
+/// （带原因），前端在页脚照实说明。
+pub async fn query_credit_packages(store: &AccountStore) -> Value {
+    let snapshot = store.list_accounts();
+    let accounts: Vec<Value> = snapshot
+        .get("accounts")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let is_enabled = |account: &Value| account.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+    let provider_of = |account: &Value| {
+        account
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or(crate::server::core::providers::DEFAULT_PROVIDER_ID)
+            .to_string()
+    };
+    let is_workbuddy = |account: &Value| {
+        provider_of(account) == crate::server::core::providers::DEFAULT_PROVIDER_ID
+    };
+
+    let mut skipped = 0usize;
+    let mut skip_reasons: Vec<String> = Vec::new();
+    let targets: Vec<&Value> = accounts
+        .iter()
+        .filter(|account| is_enabled(account))
+        .inspect(|account| {
+            if !is_workbuddy(account) {
+                skipped += 1;
+                skip_reasons.push(provider_of(account));
+            }
+        })
+        .filter(|account| is_workbuddy(account))
+        .collect();
+
+    let billing =
+        crate::server::core::billing::BillingService::new(crate::server::core::auth::AuthService::for_store(store.clone()));
+    let futures: Vec<_> = targets
+        .iter()
+        .map(|account| {
+            let billing = &billing;
+            async move {
+                let id = account.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                let name = account.get("name").cloned().unwrap_or(Value::Null);
+                let outcome = match store.get_session_by_id(&id) {
+                    Some(entry) => {
+                        billing
+                            .query_usage(Some(&entry.session), None)
+                            .await
+                            .map_err(|error| error.message)
+                    }
+                    None => Err("该账号没有可用凭证".to_string()),
+                };
+                match outcome {
+                    Ok(usage) => json!({
+                        "id": id, "name": name,
+                        "editionType": usage.get("editionType"),
+                        "planName": usage.get("planName"),
+                        "usageLeft": usage.get("usageLeft"),
+                        "usageUsed": usage.get("usageUsed"),
+                        "usageTotal": usage.get("usageTotal"),
+                        "expireAt": usage.get("expireAt"),
+                        "resources": usage.get("resources"),
+                        "error": Value::Null,
+                    }),
+                    Err(message) => {
+                        logging::verbose("[Accounts]", &format!("账号 {id} 积分包查询失败: {message}"));
+                        json!({ "id": id, "name": name, "usage": Value::Null, "error": message })
+                    }
+                }
+            }
+        })
+        .collect();
+    let results = futures::future::join_all(futures).await;
+    json!({ "results": results, "skipped": skipped, "skippedProviders": skip_reasons })
+}
+
 /// 手动那一轮把定时排期顺延一个间隔（口径与「立即执行」一致）。
 fn note_external_run() {
     let interval = config::scheduled_settings().usage_query.interval * 60_000;

@@ -121,6 +121,9 @@ pub fn panel_router(state: ServerState) -> Router {
         .route("/api/panel/setup", post(api::panel::panel_setup))
         .route("/api/panel/refresh", post(api::panel::panel_refresh))
         .route("/api/panel/logout", post(api::panel::panel_logout))
+        // 修改管理员账号 / 密码（protected 组）：调用方必须已登录，端点内部
+        // 再验一次原密码 —— 与「改配置要鉴权」同级敏感（改完其余会话全部下线）
+        .route("/api/panel/password", post(api::panel::panel_password))
         // ALTCHA 领题：与 status / setup 同为「认证边界」端点 —— 领题时
         // 用户还没有任何凭证（开关关闭时回 400，前端跳过校验）
         .route("/api/panel/captcha", get(api::panel::captcha_challenge))

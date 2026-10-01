@@ -77,9 +77,17 @@ fn issue_response(session: access::IssuedSession) -> Response {
 /// `GET /api/panel/status` —— 登录页用它决定显示「注册」还是「登录」。
 ///
 /// 挂 public：打开登录页时用户还没有任何凭证。
-pub async fn panel_status() -> Response {
+pub async fn panel_status(headers: HeaderMap) -> Response {
+    // username 只给**已登录**的调用方（顶栏用户菜单显示账号名用）：会话有效才带，
+    // 未登录的匿名请求拿不到 —— 管理员账号名不对未认证者暴露
+    let username = if access::session_valid(&headers) {
+        access::admin_username()
+    } else {
+        None
+    };
     ok_json(serde_json::json!({
         "registered": access::admin_registered(),
+        "username": username,
     }))
 }
 
@@ -190,10 +198,52 @@ pub async fn panel_logout(headers: HeaderMap) -> Response {
     response
 }
 
+/// `POST /api/panel/password` —— 修改管理员账号 / 密码（已登录；需验证原密码）。
+///
+/// body：`{username, oldPassword, newUsername?, newPassword?}` —— 新账号与新密码
+/// 至少填一项；只改账号名（保留原密码）或只改密码（保留原账号）都合法。
+/// 成功后撤销**除当前会话外**的全部会话链（其他设备全部下线），当前会话不动。
+/// env 预置管理员的部署会拒绝（改了也会被启动时的 env 覆盖），错误文案照实说。
+pub async fn panel_password(headers: HeaderMap, body: Bytes) -> Response {
+    // 与 setup / login 同口径：解析失败按空对象处理，字段校验自己报错
+    let payload = parse_body(&body).unwrap_or(serde_json::Value::Null);
+    let username = body_str(&payload, "username");
+    let old_password = payload
+        .get("oldPassword")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let new_username = payload.get("newUsername").and_then(serde_json::Value::as_str);
+    let new_password = payload.get("newPassword").and_then(serde_json::Value::as_str);
+    if username.is_empty() || old_password.is_empty() {
+        return management_error(400, "缺少原账号或原密码");
+    }
+    if new_username.is_none() && new_password.is_none() {
+        return management_error(400, "新账号与新密码至少填一项");
+    }
+    if let Some(password) = new_password {
+        if password.chars().count() < 8 {
+            return management_error(400, "新密码至少 8 位");
+        }
+    }
+    if let Err(message) =
+        access::change_admin_credentials(&username, old_password, new_username, new_password)
+    {
+        logging::log("[Security]", &format!("❌ 修改管理员凭据失败: {message}"));
+        crate::server::api::audit_api::audit("panel.password.failed", &message);
+        return management_error(400, &message);
+    }
+    let revoked = access::revoke_all_sessions_except(access::session_id_of(&headers).as_deref());
+    logging::log("[Security]", "✅ 管理员凭据已修改，其余会话已全部下线");
+    crate::server::api::audit_api::audit(
+        "panel.password",
+        &format!("管理员凭据已修改（撤销其他会话 {revoked} 条）"),
+    );
+    ok_json(serde_json::json!({ "changed": true, "revokedSessions": revoked }))
+}
+
 /// refresh token 的取值：cookie 的 Path 限定在 /api/panel，浏览器只在
 /// 本组接口上携带；顺手接受 Authorization: Bearer（App/脚本场景）。
-fn refresh_cookie_of(headers: &HeaderMap) -> Option<&str> {
-    if let Some(value) = headers.get(axum::http::header::AUTHORIZATION) {
+fn refresh_cookie_of(headers: &HeaderMap) -> Option<&str> {    if let Some(value) = headers.get(axum::http::header::AUTHORIZATION) {
         if let Ok(text) = value.to_str() {
             if let Some(token) = text.strip_prefix("Bearer ") {
                 if !token.trim().is_empty() {

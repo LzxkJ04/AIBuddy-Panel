@@ -153,6 +153,17 @@ pub fn panel_auth_enabled() -> bool {
     env_admin().is_some() || store_admin().is_some()
 }
 
+/// 当前管理员的**账号名**（先 env 预置、后库里的注册记录；都没配置则 None）。
+///
+/// 仅供已登录的调用方展示（panel_status 在会话有效时带上它 —— 未登录的
+/// 匿名请求不该拿到管理员账号名，那是无谓的信息暴露）。
+pub fn admin_username() -> Option<String> {
+    if let Some((user, _)) = env_admin() {
+        return Some(user.clone());
+    }
+    store_admin().map(|(user, _)| user)
+}
+
 /// 管理员是否已经存在（登录页据此显示「注册」还是「登录」）。
 pub fn admin_registered() -> bool {
     panel_auth_enabled()
@@ -186,6 +197,63 @@ pub fn setup_admin(username: &str, password_hash: &str) -> Result<bool, String> 
         .and_then(|result| result.ok())
         .ok_or_else(|| "写入管理员账号失败".to_string())?;
     Ok(changed > 0)
+}
+
+/// 修改管理员凭据（面板「修改账号密码」）：验证原账号 + 原密码后，把新的
+/// `{username, hash}` 覆盖写进 kv 的 `panelAdmin`。
+///
+/// ── env 预置时拒绝 ─────────────────────────────────────────
+/// env 预置的管理员每次启动都会覆盖式落库（`sync_env_admin_to_store`）：
+/// 面板里改了，下次重启又被改回去 —— 如实拒绝并指引改部署配置，不做
+/// 「改了但重启失效」的假成功。
+///
+/// ── new_username / new_password 都是可选 ───────────────────
+/// 只改账号名（保留原密码哈希）或只改密码（保留原账号名）都合法，
+/// 调用方至少要给一个；哈希用 bcrypt 现场转（cost 与注册/登录一致）。
+/// 调用方（api::panel）负责参数校验（长度下限等）与改完后的会话清理。
+pub fn change_admin_credentials(
+    username: &str,
+    old_password: &str,
+    new_username: Option<&str>,
+    new_password: Option<&str>,
+) -> Result<(), String> {
+    if env_admin().is_some() {
+        return Err(
+            "管理员由环境变量预置（AGENT2API_ADMIN_*）：请在部署配置中修改后重启容器".to_string(),
+        );
+    }
+    if !verify_login(username, old_password) {
+        return Err("原账号或原密码不正确".to_string());
+    }
+    let trimmed = new_username.map(str::trim).filter(|value| !value.is_empty());
+    let next_user = trimmed.unwrap_or(username).to_string();
+    let next_hash = match new_password {
+        Some(password) => bcrypt::hash(password, 10)
+            .map_err(|error| format!("密码加密失败: {error}"))?,
+        None => {
+            let (_, existing) = store_admin()
+                .ok_or_else(|| "管理员记录不存在，无法只改账号名".to_string())?;
+            existing
+        }
+    };
+    let Some(db) = db() else {
+        return Err("数据库不可用，无法保存管理员账号".to_string());
+    };
+    let payload = serde_json::json!({ "username": next_user, "hash": next_hash });
+    let changed = db
+        .with_mut(|conn| {
+            conn.execute(
+                "INSERT INTO kv (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                rusqlite::params![KV_ADMIN_KEY, payload.to_string()],
+            )
+        })
+        .and_then(|result| result.ok())
+        .ok_or_else(|| "写入管理员账号失败".to_string())?;
+    if changed == 0 {
+        return Err("写入管理员账号失败".to_string());
+    }
+    Ok(())
 }
 
 /// 环境变量预置的管理员同步进库（`kv` 的 `panelAdmin`，与面板注册同一处）：
@@ -655,6 +723,43 @@ pub fn revoke_session_by_id(session: &str) -> bool {
         }
     }
     removed_refresh || removed_access
+}
+
+/// 撤销**除指定会话外**的全部会话链（密码修改后调用：凭据变了，拿着旧会话的
+/// 其他设备理应下线；当前调用方保留，改完不被踢出）。
+/// 返回撤销的会话链条数。`current` 传 `session_id_of(headers)` 的结果
+/// （None = 调用方没有可识别会话，此时全部撤销）。
+pub fn revoke_all_sessions_except(current: Option<&str>) -> usize {
+    let current = current.unwrap_or("__none__");
+    let mut removed = 0usize;
+    {
+        let mut table = match refresh_tokens().lock() {
+            Ok(table) => table,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let before = table.len();
+        table.retain(|record| record.session == current);
+        removed += before - table.len();
+        if removed > 0 {
+            persist_refresh_tokens(&mut table);
+        }
+    }
+    {
+        let mut table = match access_tokens().lock() {
+            Ok(table) => table,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let before = table.len();
+        table.retain(|_, (session_of, _)| session_of == current);
+        removed += before - table.len();
+    }
+    {
+        // 会话元数据（设备信息等）同步清理：只留当前会话的
+        if let Ok(mut meta) = session_meta().lock() {
+            meta.retain(|session, _| session == current);
+        }
+    }
+    removed
 }
 
 fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {

@@ -703,3 +703,85 @@ body.has-titlebar .shell {
 }
 .nav-group-toggle.expanded .nav-group-arrow { transform: rotate(180deg); }
 .nav-group-toggle:not(.expanded) + .nav-item { display: none !important; }
+
+/* ── 顶栏用户菜单（user-menu.js）────────────────────────────
+   按钮：与 .tb-icon-btn 同族的 30px 方钮 + 可展开成「图标+账号名」的宽钮；
+   弹层 / 弹窗：token 着色（深浅主题自适应），z-index 高于顶栏但低于偏好
+   抽屉的遮罩（1000）—— 弹层用 1005 会被抽屉盖住的场景不存在（互斥使用）。 */
+.um-holder { display: inline-flex; align-items: center; flex: 0 0 auto; }
+.um-btn-topbar {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 8px;
+  border: none; border-radius: var(--r-sm);
+  background: transparent; color: var(--text-2);
+  cursor: pointer; transition: background .15s, color .15s;
+  max-width: 180px;
+}
+.um-btn-topbar:hover, .um-btn-topbar[aria-expanded="true"] { background: var(--nav-hover); color: var(--text); }
+.um-btn-topbar .um-label {
+  font-size: 12px; font-weight: 600;
+  max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.um-btn-topbar .um-caret { display: inline-flex; opacity: .7; }
+.um-btn-topbar .um-ico { display: inline-flex; }
+
+.um-pop {
+  position: fixed; z-index: 1005;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-md); box-shadow: var(--shadow-2);
+  padding: 6px;
+}
+.um-head { display: flex; align-items: center; gap: 9px; padding: 8px 10px 9px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+.um-avatar {
+  width: 28px; height: 28px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--primary-soft); color: var(--primary-fg); flex: 0 0 auto;
+}
+.um-name { font-size: 12.5px; font-weight: 600; color: var(--text); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.um-role { font-size: 10.5px; color: var(--text-3); margin-top: 1px; }
+.um-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 10px; border: none; border-radius: var(--r-sm);
+  background: transparent; color: var(--text); font-size: 12.5px; cursor: pointer;
+  text-align: left; transition: background .12s;
+}
+.um-item:hover { background: var(--nav-hover); }
+.um-item svg { flex: 0 0 auto; opacity: .8; }
+.um-item.um-logout { color: var(--destructive); }
+.um-item.um-logout:hover { background: var(--destructive-soft); }
+
+/* 修改账号密码弹窗（轻量 DOM，不用组件库 —— user-menu.js 是顶栏原生脚本） */
+.um-mask { position: fixed; inset: 0; z-index: 1006; background: oklch(0 0 0 / 40%); display: grid; place-items: center; padding: 16px; }
+.um-dialog {
+  width: min(360px, 100%);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-md); box-shadow: var(--shadow-2);
+  padding: 16px;
+}
+.um-dialog h3 { font-size: 14px; font-weight: 600; color: var(--text); margin: 0 0 12px; }
+.um-dialog label { display: block; font-size: 12px; color: var(--text-2); margin-bottom: 10px; }
+.um-dialog label { display: flex; flex-direction: column; gap: 5px; }
+.um-dialog input {
+  height: 32px; padding: 0 10px; font-size: 13px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface-2); color: var(--text);
+}
+.um-dialog input:focus { outline: none; border-color: var(--primary); }
+.um-warn { font-size: 11.5px; color: var(--text-3); margin: 2px 0 12px; }
+.um-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.um-btn {
+  height: 30px; padding: 0 14px; font-size: 12.5px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--text); cursor: pointer;
+}
+.um-btn:hover { background: var(--nav-hover); }
+.um-btn.um-primary { border-color: transparent; background: var(--primary); color: var(--primary-fg); }
+.um-btn.um-primary:hover { filter: brightness(1.06); }
+.um-btn:disabled { opacity: .6; cursor: not-allowed; }
+
+/* 手机端：按钮收成纯图标，弹层右缘不出屏 */
+@media (max-width: 640px) {
+  .um-btn-topbar .um-label, .um-btn-topbar .um-caret { display: none; }
+  .um-btn-topbar { padding: 0; width: 30px; justify-content: center; }
+  .um-pop { right: 12px; left: auto !important; }
+}

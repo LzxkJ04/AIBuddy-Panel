@@ -5,15 +5,12 @@
  * 这个 section 上（不套宿主 div，与 settings-page / report-page 同一手法）。
  *
  * ── 数据从哪来 ──────────────────────────────────────────────
- * 积分查询链路是现成的：`GET /api/accounts/usage/snapshot` 返回最近一次**定时查询**的
- * 快照（秒开、不打上游），`GET /api/accounts/usage` 才真正逐账号打上游（账号页工具栏的
- * 「查询积分」与定时任务页的定时查询走同一条）。每条 result 的 `usage.resources[]` 就是
- * 积分包构成（packageCode / name / isDaily / total / used / left / expireAt …，后端已按
- * 到期时间排序，见 billing/usage.rs）—— 本页只做展示，不再发明新的上游调用。
- *
- * 打开页面 = 读快照（app.js 的 showPage 转发 `wbCreditsPanel.load()`）；「查询积分」按钮
- * 才发起真查询（与账号页同一语义：全量启用账号、支持积分查询的家）。两家之外的账号
- * （无 resources 形状 / error）不进对比与明细，只归进底部一行「N 个账号无积分明细」。
+ * `GET /api/accounts/usage/packages`：逐启用 WorkBuddy 账号走 get-user-resource 的
+ * **逐包明细**（packageCode / name / isDaily / total / used / left / expireAt …，后端已按
+ * 到期时间排序，见 billing/usage.rs）。每次点击都真打上游；其它提供商的 usage 形状
+ * （wallets / 积分简报）没有「积分包 + 到期」概念，由后端计入 skipped、页脚照实说明。
+ * （v2.13.0 一版曾错用 /api/accounts/usage —— 它对 WorkBuddy 走积分简报三个数，
+ * 没有 resources，页面永远是空态；v2.13.1 起改用本端点。）
  *
  * ── 视觉 ────────────────────────────────────────────────────
  * 复用 settings-page 同一套 tokens（bg-card / border-hairline / text-subtle …），
@@ -71,8 +68,22 @@ type UsagePayload = {
   resources?: ResourceItem[]
 }
 
-type UsageResult = { id?: string; name?: string; usage?: UsagePayload | null; error?: string; code?: string }
-type Snapshot = { at?: number; results?: UsageResult[]; skipped?: { id?: string; reason?: string }[] }
+type UsageResult = {
+  id?: string
+  name?: string
+  /** 逐包明细行（/api/accounts/usage/packages 把本家 usage 的这些字段平铺到 result 上） */
+  editionType?: string
+  planName?: string
+  usageLeft?: string
+  usageUsed?: string
+  usageTotal?: string
+  expireAt?: number | null
+  resources?: ResourceItem[]
+  /** 平铺口径里 resources 不存在而 error 有值 = 这一行查询失败 */
+  error?: string | null
+  usage?: UsagePayload | null
+}
+type Snapshot = { at?: number; results?: UsageResult[]; skipped?: number; skippedProviders?: string[] }
 
 /** 把数字 / 数字字符串归一成有限数值（NaN / 缺失 → 0），聚合用 */
 function numOf(value: number | string | undefined | null): number {
@@ -99,10 +110,18 @@ const EDITION_LABELS: Record<string, string> = {
   free: '免费',
 }
 
-/** 有积分包明细的账号（WorkBuddy 个人 / 企业口径里带 resources 的那种） */
+/** 有积分包明细的账号：逐包字段直接平铺在 result 上（新端点口径），
+ *  兼容旧 usage.resources 形状（其他端点 / 老数据） */
 function packagesOf(result: UsageResult): ResourceItem[] {
+  if (Array.isArray(result.resources)) return result.resources
   const resources = result.usage?.resources
   return Array.isArray(resources) ? resources : []
+}
+
+/** 该行是否查询失败（新端点：resources 缺失且有 error；旧形状：usage 为 null） */
+function isErrorRow(result: UsageResult): boolean {
+  if (result.usage === null && result.error) return true
+  return !Array.isArray(result.resources) && !result.usage && Boolean(result.error)
 }
 
 /* ─── 视图 ─────────────────────────────────────────────────── */
@@ -146,39 +165,21 @@ function PackageTable({ items }: { items: ResourceItem[] }): React.ReactElement 
 function CreditsPage(): React.ReactElement {
   const [snapshot, setSnapshot] = React.useState<Snapshot | null>(null)
   const [ready, setReady] = React.useState(false)
-  const [busy, setBusy] = React.useState(false)
   const [querying, setQuerying] = React.useState(false)
 
-  /** 读快照（秒开，不打上游）；at=0 表示本进程还没查过 → 空态引导手动查询 */
+  /** 拉积分包构成（逐启用 WorkBuddy 账号真打上游）。打开页面先拉一次，
+   *  「查询积分」按钮再拉——端点本身就是明细查询，没有快照层。 */
   const load = React.useCallback(async (): Promise<void> => {
-    setReady(false)
+    setQuerying(true)
     try {
-      setSnapshot(await callLocal<Snapshot>('GET', '/api/accounts/usage/snapshot'))
+      setSnapshot(await callLocal<Snapshot>('GET', '/api/accounts/usage/packages'))
     } catch (error) {
-      toast(`读取积分快照失败：${describeError(error)}`, 'err')
+      toast(`读取积分构成失败：${describeError(error)}`, 'err')
     } finally {
+      setQuerying(false)
       setReady(true)
     }
   }, [])
-
-  /** 真查询（逐账号打上游，与账号页「查询积分」同一语义），成功后以响应为准重画。
-   *  手动查询本身就是一次「已查询」：响应没有 at（只有快照端点带）时补当前时间，
-   *  否则空态文案会错成「本进程还没有查过积分」。 */
-  const queryNow = React.useCallback(async (): Promise<void> => {
-    if (querying) return
-    setQuerying(true)
-    setBusy(true)
-    try {
-      const report = await callLocal<Snapshot>('GET', '/api/accounts/usage')
-      setSnapshot(prev => ({ ...(report ?? {}), at: report?.at || prev?.at || Date.now() }))
-      toast('✅ 积分查询完成')
-    } catch (error) {
-      toast(`积分查询失败：${describeError(error)}`, 'err')
-    } finally {
-      setQuerying(false)
-      setBusy(false)
-    }
-  }, [querying])
 
   React.useEffect(() => {
     // 对外接口登记：app.js 切到本页时调 wbCreditsPanel.load()（转给组件内的 load）
@@ -188,9 +189,10 @@ function CreditsPage(): React.ReactElement {
   }, [load])
 
   const results = snapshot?.results ?? []
+  const failedRows = results.filter(isErrorRow)
   const withPackages = results.filter(item => packagesOf(item).length > 0)
-  const withoutPackages = results.length - withPackages.length
-  const skipped = snapshot?.skipped ?? []
+  const skipped = snapshot?.skipped ?? 0
+  const skippedProviders = snapshot?.skippedProviders ?? []
 
   // ── 到期分布：全账号的积分包按到期日聚合（缺失到期时间的包不计入）──
   const byDay = new Map<string, number>()
@@ -210,26 +212,26 @@ function CreditsPage(): React.ReactElement {
         <div>
           <h2 className='text-[15px] font-semibold'>积分构成</h2>
           <p className='hint mt-0.5'>
-            逐账号的积分包明细与到期分布。数据来自「积分查询」——打开本页先展示最近一次定时查询的快照，
-            点「查询积分」才会真正到上游逐账号拉取。
+            逐 WorkBuddy 账号的积分包明细与到期分布（每次打开 / 点「查询积分」都会到上游逐账号拉取；
+            其他提供商没有「积分包 + 到期」的概念，不计入本页）。
           </p>
         </div>
-        <Button id='btn-credits-query' variant='default' disabled={querying || busy} onClick={() => void queryNow()}>
+        <Button id='btn-credits-query' variant='default' disabled={querying} onClick={() => void load()}>
           {querying ? <><Spinner className='mr-1.5 inline-block size-3.5' />查询中…</> : '查询积分'}
         </Button>
       </div>
 
       {!ready ? (
         <div className='rounded-md border border-hairline bg-card p-6 text-center text-[12px] text-subtle'>
-          <Spinner className='mr-1.5 inline-block size-3.5' />正在读取积分快照…
+          <Spinner className='mr-1.5 inline-block size-3.5' />正在查询积分构成…
         </div>
       ) : withPackages.length === 0 ? (
         <div className='rounded-md border border-hairline bg-card p-6 text-center'>
-          <p className='text-[13px] font-medium'>还没有积分数据</p>
-          <p className='hint mx-auto mt-1 max-w-[520px]'>
-            {snapshot?.at
-              ? '最近一次查询的结果里没有可展示的积分包（可能查询时没有启用中的账号，或账号不属于提供积分包的提供商）。'
-              : '本进程还没有查过积分。点右上角「查询积分」对全部启用账号拉取一次（也可在「任务中心」里配置定时查询）。'}
+          <p className='text-[13px] font-medium'>没有可展示的积分包</p>
+          <p className='hint mx-auto mt-1 max-w-[560px]'>
+            {failedRows.length > 0
+              ? `${failedRows.length} 个 WorkBuddy 账号查询失败（如「${String(failedRows[0].error).slice(0, 40)}…」），请到「账号池」检查登录态后重试。`
+              : '没有启用中的 WorkBuddy 账号（或查询时上游没有返回积分包）。积分包是 WorkBuddy（腾讯 CodeBuddy）的额度概念，其他提供商不产生积分包。'}
           </p>
         </div>
       ) : (
@@ -258,18 +260,17 @@ function CreditsPage(): React.ReactElement {
 
           {/* ── 账号对比 + 逐包明细 ── */}
           {withPackages.map(item => {
-            const usage = item.usage
-            const edition = EDITION_LABELS[usage?.editionType || ''] || usage?.editionType || ''
+            const edition = EDITION_LABELS[item.editionType || ''] || item.editionType || ''
             return (
               <section key={item.id || item.name} className='rounded-md border border-hairline bg-card p-3'>
                 <div className='flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1'>
                   <h3 className='text-[13px] font-semibold'>{item.name || item.id || '（未命名账号）'}</h3>
                   <div className='flex flex-wrap items-baseline gap-x-4 gap-y-0.5 text-[12px]'>
-                    {usage?.planName ? <span className='text-subtle'>{usage.planName}{edition ? ` · ${edition}` : ''}</span> : null}
-                    <span>总剩余 <b className='tabular-nums'>{usage?.usageLeft ?? '—'}</b></span>
-                    <span className='text-subtle'>已用 <span className='tabular-nums'>{usage?.usageUsed ?? '—'}</span></span>
-                    <span className='text-subtle'>累计 <span className='tabular-nums'>{usage?.usageTotal ?? '—'}</span></span>
-                    <span className='text-subtle'>套餐到期 {dayOf(usage?.expireAt) || '—'}</span>
+                    {item.planName ? <span className='text-subtle'>{item.planName}{edition ? ` · ${edition}` : ''}</span> : null}
+                    <span>总剩余 <b className='tabular-nums'>{item.usageLeft ?? '—'}</b></span>
+                    <span className='text-subtle'>已用 <span className='tabular-nums'>{item.usageUsed ?? '—'}</span></span>
+                    <span className='text-subtle'>累计 <span className='tabular-nums'>{item.usageTotal ?? '—'}</span></span>
+                    <span className='text-subtle'>套餐到期 {dayOf(item.expireAt) || '—'}</span>
                   </div>
                 </div>
                 <div className='mt-2'>
@@ -279,10 +280,13 @@ function CreditsPage(): React.ReactElement {
             )
           })}
 
-          {(withoutPackages > 0 || skipped.length > 0) && (
+          {(failedRows.length > 0 || skipped > 0) && (
             <p className='hint'>
-              另有 {withoutPackages} 个账号本次查询结果不含积分包明细（不支持积分查询的提供商或查询报错）
-              {skipped.length > 0 ? `，${skipped.length} 个账号被跳过` : ''}。
+              {failedRows.length > 0 ? `${failedRows.length} 个 WorkBuddy 账号查询失败（${String(failedRows[0].error).slice(0, 50)}${String(failedRows[0].error).length > 50 ? '…' : ''}）` : ''}
+              {failedRows.length > 0 && skipped > 0 ? '；' : ''}
+              {skipped > 0
+                ? `另有 ${skipped} 个其他提供商的账号未计入${skippedProviders.length ? `（${[...new Set(skippedProviders)].join('、')}）` : ''}`
+                : ''}。
             </p>
           )}
         </>

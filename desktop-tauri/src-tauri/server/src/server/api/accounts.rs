@@ -241,6 +241,11 @@ pub async fn dispatch(
         ("GET", "usage/snapshot") => {
             return super::accounts_usage::accounts_usage_snapshot().await
         }
+        // 积分包构成（仅 WorkBuddy）：逐启用账号走 get-user-resource 的逐包明细，
+        // 供「积分构成」页使用（/api/accounts/usage 的本家形状是积分简报，无逐包数据）
+        ("GET", "usage/packages") => {
+            return super::accounts_usage::credit_packages(&state).await
+        }
         // 账号级活跃连接数（账号页「连接数」列；见 `core::upstream::connections`）
         ("GET", "connections") => return account_connections(&state),
         ("POST", "checkin") => return accounts_checkin(&state, body).await,
