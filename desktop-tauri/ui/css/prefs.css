@@ -1,10 +1,10 @@
 /* ─────────────────────────────────────────────
    AIBuddy Panel · 偏好设置系统样式（vue-next-admin 风格）
    抽屉（四页签）/ 胶囊页签 / 主题三卡（SVG）/ 布局模式四卡（迷你示意图）/
-   色板圆点+名称 / 开关行 / 分段选择 / 页脚 / 顶栏图标钮 /
-   Ctrl+K 搜索 / 进度条 / 欢迎横幅 / Toast / 水印 /
-   灰色·色弱滤镜 / 页面切换动画 / 局部深色侧栏顶栏 / 顶栏渐变 /
-   面包屑·Logo·分组标题显隐 / 菜单高亮条 / 版权页脚 / 锁屏遮罩 / 手机端适配
+   色板圆点+名称 / 开关行 / 分段选择 / 页脚（含「检查更新」按钮）/
+   顶栏图标钮 / 页面快速跳转搜索 / 进度条 / 欢迎横幅（含账号池摘要 chip）/
+   Toast / 水印 / 灰色·色弱滤镜 / 页面切换动画 / 局部深色侧栏顶栏 / 顶栏渐变 /
+   面包屑·Logo·分组标题·页签栏显隐 / 菜单高亮条 / 版权页脚 / 锁屏遮罩 / 手机端适配
    颜色一律走 tokens.css 变量，深色主题自动成立。
    ───────────────────────────────────────────── */
 
@@ -246,7 +246,7 @@
 .pref-act.danger { color: var(--danger); border-color: var(--danger-bd); }
 .pref-act.danger:hover { background: var(--danger-soft); color: var(--danger); }
 
-/* ── Ctrl+K 搜索 ── */
+/* ── 页面快速跳转（顶栏放大镜按钮进入）── */
 .pref-search-box {
   position: fixed; top: 15vh; left: 50%; transform: translateX(-50%);
   width: min(480px, 92vw); z-index: 1001;
@@ -259,10 +259,6 @@
 .pref-search-head input {
   flex: 1; border: none; outline: none; background: transparent;
   color: var(--text); font-size: 14px;
-}
-.pref-search-kbd {
-  padding: 2px 6px; border: 1px solid var(--border); border-radius: var(--r-xs);
-  background: var(--surface-2); font-size: 10px; color: var(--text-3);
 }
 .pref-search-list { max-height: 320px; overflow-y: auto; border-top: 1px solid var(--hairline); padding: 6px; }
 .pref-search-item {
@@ -389,6 +385,11 @@ html[data-pref-anim="slide"] .page.active { animation: prefPageSlide .3s cubic-b
   pointer-events: none;
 }
 
+/* ── 页签栏开关（vue-next-admin isTagsview）：关 = 隐藏内容区顶部页签条 ──
+   页签条由 js/tags-view.js 动态注入（.main 内、.content 之前），display:none
+   只影响显示，页签清单与当前页记忆不受影响 */
+:root[data-pref-tags="off"] .tags-view { display: none; }
+
 /* ── 欢迎横幅（报表页顶部）── */
 .aibuddy-banner {
   display: flex; align-items: center; gap: 14px;
@@ -418,6 +419,12 @@ html[data-pref-anim="slide"] .page.active { animation: prefPageSlide .3s cubic-b
 }
 .ab-arrow { display: inline-flex; color: var(--text-3); }
 
+/* 账号池摘要 chip（账号 N / 请求记录 M）：数据来自 /api/storage，
+   取不到 / 库不可用时容器保持 hidden 整体隐藏；显示时接管 .ab-steps 的
+   右侧 auto 边距，两组合成一条右对齐的行 */
+.ab-pool:not([hidden]) { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.ab-pool:not([hidden]) + .ab-steps { margin-left: 0; }
+
 /* ── 手机端适配（照参考站：<1000px 侧栏抽屉化 + 汉堡键；<768px 隐藏面包屑）── */
 @media (max-width: 1000px) {
   body { min-width: 0; }
@@ -443,6 +450,7 @@ html[data-pref-anim="slide"] .page.active { animation: prefPageSlide .3s cubic-b
   :root { --content-max: 100vw; --pad: 14px; }
   .aibuddy-banner { flex-wrap: wrap; }
   .ab-steps { margin-left: 0; }
+  .ab-pool:not([hidden]) { margin-left: 0; }
 }
 @media (max-width: 768px) {
   .topbar .crumb { display: none; }
@@ -470,8 +478,14 @@ html[data-pref-anim="slide"] .page.active { animation: prefPageSlide .3s cubic-b
 .pref-drawer .pref-palette-item .name { line-height: 1.2 !important; }
 
 /* ── 版权页脚（isFooter）：主内容区底部固定一行 ──
-   content-inner 是 flex 纵向容器，margin-top:auto 在内容不满一屏时也贴底 */
+   content-inner 是 flex 纵向容器，margin-top:auto 在内容不满一屏时也贴底；
+   版权文案居中，右缘 absolute 一枚小按钮「检查更新」（不用 transform 居中，
+   避免与全局 button:active 的位移冲突） */
 .pref-footer {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   margin-top: auto;
   padding: 13px 0 16px;
   border-top: 1px solid var(--hairline);
@@ -480,6 +494,29 @@ html[data-pref-anim="slide"] .page.active { animation: prefPageSlide .3s cubic-b
   color: var(--text-3);
   letter-spacing: .2px;
   user-select: none;
+}
+.pref-footer-check {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  margin: auto 0;
+  height: 22px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text-3);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.pref-footer-check:hover { border-color: var(--primary-bd); color: var(--primary-fg); }
+/* 窄屏：文案可能换行占满整行，按钮回到文档流、整行右对齐 */
+@media (max-width: 640px) {
+  .pref-footer { flex-wrap: wrap; row-gap: 8px; }
+  .pref-footer-check { position: static; margin-left: auto; }
 }
 
 /* ── 抽屉里的锁屏输入（宽下入行右栏，全局 input 基础样式已够用，只定宽）── */
@@ -539,3 +576,11 @@ html[data-pref-anim="slide"] .page.active { animation: prefPageSlide .3s cubic-b
 @media (prefers-reduced-motion: reduce) {
   .pref-lock.shake .pref-lock-box { animation: none; }
 }
+
+.pref-text-input {
+  width: 100%; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface-2); color: var(--text); font-size: 12.5px;
+  outline: none;
+}
+.pref-text-input:focus { border-color: var(--primary-bd); }

@@ -61,7 +61,7 @@ import {
 } from '@ui'
 import { TableFooter, useClientPaging } from './table-shell'
 import { shared, type AccountRecord, type ColSettingsHandle } from './accounts-shared'
-import { checkinableAccounts, isDesktopAccount, isEnabled, supportsUsage } from './accounts-domain'
+import { checkinableAccounts, isDesktopAccount, isEnabled, isRateLimited, supportsUsage } from './accounts-domain'
 import { ACCOUNT_COLUMNS, bindColumnGrips, columnWidths } from './accounts-columns'
 import {
   allAccounts, checkinAll, clearLimits, clearSelection, ensureProxyPoolOptions,
@@ -124,6 +124,148 @@ function syncHead(): void {
     const grip = th.querySelector('.col-grip') as HTMLElement | null
     if (grip) grip.style.display = index === ths.length - 1 ? 'none' : ''
   })
+}
+
+/* ─── 账号池状态条 ─────────────────────────── */
+
+/**
+ * 状态条样式（<style> 随组件渲染一次，规则全部圈在 .acct-pool-* 名下）。
+ *
+ * 为什么内嵌而不是进 page-accounts.css：本岛的改动约定只落在这一个 tsx 文件里；
+ * class 前缀 + 变量取自 tokens.css（--ok / --warn / --surface / --border / --primary-*），
+ * 深浅主题自动跟随。全局 `button` 规则（components.css 的控件外观）会被类选择器盖住，
+ * 但 `button:hover:not(:disabled)` 特异性更高，所以悬停态必须在这里按同等特异性
+ * 显式写回各 tone 的底色，不能只靠基类。
+ *
+ * 布局吸收 one-api / new-api 渠道管理页顶部统计的做法：一排「色点 + 名称 + 计数」
+ * 的 chip，状态用色、点击即筛选；桌面端可换行，手机端（<768px）改单行横向滚动。
+ */
+const POOL_BAR_CSS = `
+.acct-pool-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+  font-size: 11.5px;
+}
+.acct-pool-title { color: var(--text-3); white-space: nowrap; margin-right: 2px; flex: 0 0 auto; }
+.acct-pool-divider { width: 1px; height: 14px; background: var(--border); flex: 0 0 auto; }
+.acct-pool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: none;
+  flex: 0 0 auto;
+  transition: background .15s ease, border-color .15s ease;
+}
+.acct-pool-chip b { font-weight: 600; font-variant-numeric: tabular-nums; color: inherit; }
+.acct-pool-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .75; flex: 0 0 auto; }
+.acct-pool-chip:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-strong); }
+.acct-pool-chip.ok { color: var(--ok); background: var(--ok-soft); border-color: var(--ok-bd); }
+.acct-pool-chip.ok:hover:not(:disabled) { background: var(--ok-soft); border-color: var(--ok); }
+.acct-pool-chip.warn { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-bd); }
+.acct-pool-chip.warn:hover:not(:disabled) { background: var(--warn-soft); border-color: var(--warn); }
+.acct-pool-chip.mute { color: var(--text-3); }
+.acct-pool-chip.on { color: var(--primary-fg); background: var(--primary-soft); border-color: var(--primary-bd); }
+.acct-pool-chip.on:hover:not(:disabled) { background: var(--primary-soft); border-color: var(--primary-bd); }
+@media (max-width: 767px) {
+  .acct-pool-bar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
+}
+`
+
+/** 状态条上的一枚计数 chip（真按钮：可聚焦、可回车，aria-pressed 表达激活态） */
+function PoolChip(props: {
+  tone?: 'ok' | 'warn' | 'mute'
+  active?: boolean
+  title: string
+  label: string
+  count: number
+  onClick: () => void
+}) {
+  return (
+    <button type='button' className={cn('acct-pool-chip', props.tone, props.active && 'on')}
+      title={props.title} aria-pressed={props.active === true} onClick={props.onClick}>
+      <span className='acct-pool-dot' aria-hidden='true' />
+      {props.label}
+      <b>{props.count}</b>
+    </button>
+  )
+}
+
+/**
+ * 「账号池状态条」：把全局优先级候选链的现状摆成一行计数 —— 总数 / 启用 / 停用 /
+ * 限流冷却 / 各提供商，插在工具栏上方。
+ *
+ * 计数**全部由页面内存里的同一份账号列表现算**（allAccounts()，与表格同源），
+ * 不发任何额外请求；数据加载与轮询（app.js 的 refresh → wbAccountsView.render、
+ * 连接数 2 秒一轮）触发本页重绘时读数自动跟上（isRateLimited 每次渲染现算，
+ * 冷却到期后下一拍数字自己回落，与限流列同一机制）。
+ *
+ * 点击即筛选，走工具栏已有的那组 set 函数（setProviderFilter / setSegmentFilter），
+ * 与下拉、分段按钮完全联动且互斥态一致；已激活的 chip 再点一次 = 退回「全部」
+ * （chip 的自然语义，省一次去下拉找「全部」的操作）。
+ */
+function AccountPoolBar() {
+  const all = allAccounts()
+  const filter = getStore().filter
+  const enabledCount = all.filter(isEnabled).length
+  // 「限流冷却」沿用现有冷却字段口径：启用中 + 存在未到恢复时间的限额记录
+  // （isRateLimited，即 rateLimits[].resetAt > now）。禁用账号不在候选链里、谈不上
+  // 冷却，与工具栏「已限流」分段（filterCounts 的 limited）同一算法 —— 点 chip 看到
+  // 的列表条数就是这个数。
+  const cooldownCount = all.filter(account => isEnabled(account) && isRateLimited(account)).length
+  // 只列**有账号**的家（与批量栏的 provider-summary 同一取舍：0 家的 chip 不提供信息）
+  const providerChips = providerSummaryList().filter(item => item.count > 0)
+
+  return (
+    <>
+      <style>{POOL_BAR_CSS}</style>
+      <div className='acct-pool-bar' role='group' aria-label='账号池状态'>
+        <span className='acct-pool-title'>账号池</span>
+        <PoolChip title='全部账号数；点击清除所有筛选' label='账号总数' count={all.length}
+          onClick={() => {
+            setProviderFilter('all')
+            setSegmentFilter('enabled', 'all')
+            setSegmentFilter('limit', 'all')
+          }} />
+        <PoolChip tone='ok' title='启用中（参与转发）的账号；点击后状态筛选切到「启用」'
+          label='启用' count={enabledCount} active={filter.enabled === 'enabled'}
+          onClick={() => setSegmentFilter('enabled', getStore().filter.enabled === 'enabled' ? 'all' : 'enabled')} />
+        <PoolChip tone='mute' title='已停用的账号；点击后状态筛选切到「禁用」'
+          label='停用' count={all.length - enabledCount} active={filter.enabled === 'disabled'}
+          onClick={() => setSegmentFilter('enabled', getStore().filter.enabled === 'disabled' ? 'all' : 'disabled')} />
+        <PoolChip tone='warn' title='限流冷却中的账号（有未到恢复时间的限额记录）；点击后限额筛选切到「已限流」'
+          label='限流冷却' count={cooldownCount} active={filter.limit === 'limited'}
+          onClick={() => {
+            // 状态筛成「禁用」时限流维度不存在（setSegmentFilter 会把 limit 拍回 all）：
+            // 先把状态放回「全部」，「已限流」这一档才立得住
+            if (getStore().filter.enabled === 'disabled') setSegmentFilter('enabled', 'all')
+            setSegmentFilter('limit', getStore().filter.limit === 'limited' ? 'all' : 'limited')
+          }} />
+        {providerChips.length > 0 ? <span className='acct-pool-divider' aria-hidden='true' /> : null}
+        {providerChips.map(item => (
+          <PoolChip key={item.id} tone='mute' title={`只看 ${item.label} 的账号`}
+            label={item.label} count={item.count} active={filter.provider === item.id}
+            onClick={() => setProviderFilter(getStore().filter.provider === item.id ? 'all' : item.id)} />
+        ))}
+      </div>
+    </>
+  )
 }
 
 /* ─── 页面 ─────────────────────────────────── */
@@ -254,6 +396,8 @@ function AccountsPage() {
   return (
     <>
       <section className='panel account-table'>
+        {/* 账号池状态条（候选链总览）：在工具栏上方，计数与筛选都和工具栏联动 */}
+        <AccountPoolBar />
         <div className='toolbar'>
           {/* 提供商维度用下拉而不是分段按钮：家数是**动态**的（后端注册表加一家就多一项），
               分段按钮会随家数增长把工具条挤成一团；选项里带账号数，于是「哪家有账号、

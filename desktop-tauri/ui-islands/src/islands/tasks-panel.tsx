@@ -71,6 +71,13 @@ type IntervalTask = {
   running: boolean
   lastRunAt: number | null
   lastResult: string | null
+  /**
+   * 上次执行失败的原因（成功时后端写 null）。「上次失败」徽标按它判定：
+   * `lastResult` 在成功 / 失败两条路径上都会写摘要（成功摘要里也有「失败 N 个」），
+   * 拿它判定会把成功误报成失败 —— 失败标记是 `lastError`（core::task_state 的
+   * RunGuard::finish 失败路径写它、成功路径清空它）。
+   */
+  lastError?: string | null
   /** 失败冷却的到期时刻（仅后端任务） */
   retryAt: number | null
   nextRunAt: number | null
@@ -193,6 +200,13 @@ const CHECKIN_DESC =
 const SYNC_MS = 20_000
 
 /**
+ * 「下次执行」倒计时的重算间隔：本页一条**共享**的 30 秒心跳推进一个 `now`，
+ * 所有卡片上的相对时间（倒计时 / 冷却）随它一起重算 —— 不是每条任务各挂一个
+ * 定时器。它只重算文案，不发任何请求；页面隐藏时整条停掉（见组件里的 effect）。
+ */
+const COUNTDOWN_MS = 30_000
+
+/**
  * 整行铺开的卡片条数：自动签到 + 凭证自动维护。
  * 其余卡片裹进 `.task-grid` 两栏三行（列优先，见 page-tasks.css 的说明）。
  */
@@ -224,19 +238,38 @@ function clockOf(value: unknown): string {
   return new Date(ms).toLocaleTimeString('zh-CN', { hour12: false })
 }
 
-/** 「下次执行」的相对说法：比只给一个时刻更有用（用户关心的是还有多久） */
-function describeNext(value: unknown): string {
+/**
+ * 「下次执行」的相对说法：比只给一个时刻更有用（用户关心的是还有多久）。
+ *
+ * `now` 由调用方传入（面板的 30 秒心跳推进它）而不是自己取 Date.now()：
+ * 同一次渲染里所有行的倒计时用同一个基准，重算也只发生在心跳上。
+ * 分钟以上是四舍五入的约数，按口径加「约」；秒级是确切剩余量，不加。
+ */
+function describeNext(value: unknown, now: number): string {
   const ms = Number(value) || 0
   if (!ms) return ''
-  const diff = ms - Date.now()
+  const diff = ms - now
   if (diff <= 0) return '即将执行'
   const seconds = Math.round(diff / 1000)
   if (seconds < 60) return `${seconds} 秒后`
   const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `${minutes} 分钟后`
+  if (minutes < 60) return `约 ${minutes} 分钟后`
   const hours = Math.round(minutes / 60)
-  if (hours < 24) return `${hours} 小时后`
-  return `${Math.round(hours / 24)} 天后`
+  if (hours < 24) return `约 ${hours} 小时后`
+  return `约 ${Math.round(hours / 24)} 天后`
+}
+
+/**
+ * 「每天 HH:mm」的下一次触发时刻（签到排期字段缺失时的估算基准）：
+ * 今天还没到就取今天，过了就取明天。解析不出时刻返回 0（调用方再往下降级）。
+ */
+function nextDailyAt(hhmm: string, now: number): number {
+  const [hours, minutes] = String(hhmm || '').split(':').map(Number)
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return 0
+  const next = new Date(now)
+  next.setHours(hours, minutes, 0, 0)
+  if (next.getTime() <= now) next.setDate(next.getDate() + 1)
+  return next.getTime()
 }
 
 /**
@@ -247,8 +280,11 @@ function describeNext(value: unknown): string {
  * 而排期与上次执行都跨重启保留（后端落库），所以「本次启动后」是过时说法 ——
  * updateTask 的注释也这么说。这里统一取后者（用户停留 20 秒后本来就会看到的那份），
  * 并补上模板漏掉的「失败冷却」行（那是用户唯一能看出「为什么一直没跑」的地方）。
+ *
+ * 「下次执行」不再拼进这一行：它升级成了每张卡自己的一行小字（见 taskNextRun，
+ * 带倒计时与「上次失败」徽标），留在这里会把同一件事说两遍。
  */
-function taskStateText(task: IntervalTask): string {
+function taskStateText(task: IntervalTask, now: number): string {
   const backend = task.runner === 'backend'
   const lines: string[] = []
   if (task.lastRunAt) {
@@ -256,11 +292,8 @@ function taskStateText(task: IntervalTask): string {
   } else {
     lines.push(backend ? '还没有执行记录' : '由页面按间隔自动刷新')
   }
-  if (backend && task.enabled && task.nextRunAt) {
-    lines.push(`下次执行 ${clockOf(task.nextRunAt)}（${describeNext(task.nextRunAt)}）`)
-  }
-  if (backend && task.retryAt && task.retryAt > Date.now()) {
-    lines.push(`冷却中，${describeNext(task.retryAt)}重试`)
+  if (backend && task.retryAt && task.retryAt > now) {
+    lines.push(`冷却中，${describeNext(task.retryAt, now)}重试`)
   }
   return lines.join(SEP)
 }
@@ -273,9 +306,6 @@ function checkinStateText(data: CheckinState | null): string {
     lines.push('未开启，账号需要手动签到')
   } else {
     lines.push(`每天 ${data.time} 自动签到`)
-    if (data.nextRunAt) {
-      lines.push(`下次执行 ${clockOf(data.nextRunAt)}（${describeNext(data.nextRunAt)}）`)
-    }
   }
   const result = data.lastResult
   if (result) {
@@ -292,6 +322,103 @@ function checkinStateText(data: CheckinState | null): string {
     lines.push(`${head}${extras.length ? `，${extras.join('、')}` : ''}${failed}`)
   }
   return lines.join(SEP)
+}
+
+/* ─── 「下次执行」一行 ─────────────────────── */
+
+/** 「下次执行」一行的内容：文案，外加要不要挂「上次失败」徽标 */
+type NextRunInfo = {
+  /** 空字符串 = 这张卡不画这一行（签到设置读不到时整卡已降级，不再重复说明） */
+  text: string
+  /** 上次执行失败：文案旁挂一枚「上次失败」小徽标（组件库里 --warn 档） */
+  failed: boolean
+  /** 已停用：整行灰字，不显示倒计时也不挂徽标 */
+  disabled: boolean
+}
+
+/**
+ * 间隔型任务的「下次执行」一行（随 30 秒心跳用新的 `now` 重算相对说法）。
+ *
+ * ── 数据口径 ──────────────────────────────────────────────
+ *   - **确切排期优先**：后端任务开启时 /api/scheduled-tasks 下发确切的
+ *     `nextRunAt`（core::scheduled_tasks 的 task_json，已把失败冷却与在途
+ *     占位一并 max 进去），显示绝对时刻 + 相对倒计时；
+ *   - **字段缺失才估算**：按「上次执行 + 间隔」推算并在文案注明——它没算上
+ *     失败冷却，只能当参考；
+ *   - **前端任务不编时刻**：三条页面自动刷新的执行者是页面自己的定时器，
+ *     只在对应页面打开时才走，排期概念不存在，如实说明；
+ *   - **已停用**：按口径只给「已停用」灰字。
+ *
+ * 「上次失败」按 `lastError` 判定（见 IntervalTask 上的注释：`lastResult`
+ * 成功失败都写摘要，不能当判定字段）。
+ */
+function taskNextRun(task: IntervalTask, now: number): NextRunInfo {
+  if (!task.enabled) return { text: '已停用', failed: false, disabled: true }
+  const failed = typeof task.lastError === 'string' && task.lastError.trim() !== ''
+  if (task.runner !== 'backend') {
+    return { text: '下次执行 由所在页面按间隔刷新（无固定时刻）', failed: false, disabled: false }
+  }
+  const next = Number(task.nextRunAt) || 0
+  if (next) {
+    return { text: `下次执行 ${clockOf(next)}（${describeNext(next, now)}）`, failed, disabled: false }
+  }
+  const last = Number(task.lastRunAt) || 0
+  const step = (Number(task.interval) || 0) * (task.unit === 'seconds' ? 1000 : 60_000)
+  if (last && step) {
+    return {
+      text: `下次执行 ${describeNext(last + step, now)}（按上次执行与间隔估算）`,
+      failed,
+      disabled: false,
+    }
+  }
+  return { text: '下次执行 未知（后端未返回排期）', failed, disabled: false }
+}
+
+/**
+ * 自动签到的「下次执行」一行。口径同 taskNextRun：开启时后端下发确切的
+ * `nextRunAt`（auto_checkin::state 按触发时刻算好的绝对时刻）；缺失才按
+ * 「每天 HH:mm」推下一次并注明估算。上次失败按 `lastResult.failedCount`
+ * 判定（部分账号失败也算 —— 与「立即签到」完成后的失败 toast 同一口径）。
+ */
+function checkinNextRun(data: CheckinState | null, now: number): NextRunInfo {
+  if (!data) return { text: '', failed: false, disabled: false }
+  if (data.enabled !== true) return { text: '已停用', failed: false, disabled: true }
+  const failed = Number(data.lastResult?.failedCount) > 0
+  const next = Number(data.nextRunAt) || 0
+  if (next) {
+    return { text: `下次执行 ${clockOf(next)}（${describeNext(next, now)}）`, failed, disabled: false }
+  }
+  const time = data.time || '00:01'
+  const estimate = nextDailyAt(time, now)
+  if (estimate) {
+    return {
+      text: `下次执行 ${describeNext(estimate, now)}（按每天 ${time} 估算）`,
+      failed,
+      disabled: false,
+    }
+  }
+  return { text: `下次执行 每天 ${time} 触发`, failed, disabled: false }
+}
+
+/**
+ * 「下次执行」小字行的渲染：复用 `.task-state` 的排版（弱化色小字 + 等宽数字，
+ * 样式在 page-tasks.css）—— 它与上一行运行状态是同一档信息，不另起一套样式；
+ * 颜色随 tokens 变量走，深浅主题自动成立。「上次失败」徽标取组件库的 warning
+ * 档（与旧 `.badge.warn` 同一语义色，浅深两套取值同 ui/css/tokens.css 的
+ * `--warn` 那组），tag 形态比标题行的胶囊徽章小一号，贴在倒计时旁边不撑行。
+ */
+function nextRunLine(info: NextRunInfo) {
+  if (!info.text) return null
+  return (
+    <div className='task-state'>
+      {info.text}
+      {info.failed ? (
+        <Badge variant='warning' shape='tag' className='ml-[6px] align-middle'>
+          上次失败
+        </Badge>
+      ) : null}
+    </div>
+  )
 }
 
 /**
@@ -477,6 +604,42 @@ function TasksPanel() {
       window.clearInterval(timer)
     }
   }, [sync])
+
+  /**
+   * 「下次执行」倒计时的心跳：一条共享的 30 秒 interval 推 `now` 前进，
+   * 页面上所有相对时间随它一起重算 —— 不是每条任务各挂一个定时器。
+   * 纯前端重算，不发任何请求；页面隐藏时把 interval 停掉（省电也免得
+   * 白算），回到前台先立即重算一次再重启，不必等下一个 30 秒才追上。
+   */
+  const [now, setNow] = React.useState(() => Date.now())
+  React.useEffect(() => {
+    let timer: number | null = null
+    const stop = () => {
+      if (timer !== null) {
+        window.clearInterval(timer)
+        timer = null
+      }
+    }
+    const start = () => {
+      if (timer === null && !document.hidden) {
+        timer = window.setInterval(() => setNow(Date.now()), COUNTDOWN_MS)
+      }
+    }
+    const onVisibility = () => {
+      if (document.hidden) {
+        stop()
+        return
+      }
+      setNow(Date.now())
+      start()
+    }
+    start()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [])
 
   /** 顶栏那块是本页徽标的镜像（app.js 的 renderTopbarStatus 读 #tasks-badge）：
    *  数据一更新就让它跟上，否则要等下一次主状态轮询（20 秒）才同步。 */
@@ -696,7 +859,8 @@ function TasksPanel() {
               </Badge>
             ) : null}
           </div>
-          <div className='task-state'>{taskStateText(task)}</div>
+          <div className='task-state'>{taskStateText(task, now)}</div>
+          {nextRunLine(taskNextRun(task, now))}
         </div>
         <div className='task-actions'>
           <span className='task-interval'>
@@ -803,6 +967,7 @@ function TasksPanel() {
             ))}
           </div>
           <div className='task-state'>{checkinStateText(data)}</div>
+          {nextRunLine(checkinNextRun(data, now))}
         </div>
         <div className='task-actions'>
           <span className='task-interval'>

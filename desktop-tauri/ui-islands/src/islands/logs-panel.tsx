@@ -4,6 +4,7 @@ import {
   Badge, Button, InputGroup, InputGroupAddon, InputGroupInput,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
   SegmentedControl, type SegmentedControlOption,
+  cn,
 } from '@ui'
 import {
   CLIENT_PAGE_SIZES,
@@ -30,6 +31,13 @@ import {
  * ── 自动刷新的间隔从哪来 ──────────────────────────────────
  * 不写死：由「定时任务」页配置（config.json 的 `scheduledTasks.logsAutoRefresh`）。本面板启动时
  * 自读一次（syncAutoRefresh），之后接受那边推送（applyAutoRefresh）；兜底 1 秒 = 后端默认值。
+ *
+ * ── 级别 chips 的计数从哪来 ───────────────────────────────
+ * 列表上方那排级别 chips（全部 / 信息 / 警告 / 错误）与级别下拉写的是**同一份筛选状态**
+ * （filters.level，点 chip = onSelectChange 换 level），不另起请求路径。chip 里的计数读
+ * /api/logs/stats 的 byLevel（各级别总条数）—— 这份响应每次 load 本来就并行取回
+ * （Promise.all），此前只是没消费；没拿到（首帧 / 失败）就只显示名称，绝不为 chips 单独
+ * 发请求。样式内嵌在组件里（.log-level-chips / .log-chip），与账号页 .acct-pool-* 同一做法。
  *
  * ── 边界：页面骨架照抄 index.html，控件换组件库 ────────────────
  * 本岛接管 `<section class="page" data-page="logs">`，清空子节点后把 React root 直接建在**这个
@@ -70,8 +78,12 @@ type LogQueryResult = {
   categories?: Record<string, string>
 }
 
-/** GET /api/logs/stats：app.js 的 updateLogsBadge 只读 lastId（导航徽标的已读水位） */
-type LogStats = { lastId?: number; total?: number } | null
+/**
+ * GET /api/logs/stats：app.js 的 updateLogsBadge 只读 lastId（导航徽标的已读水位）。
+ * byLevel 是各级别的总条数（{debug:…, info:…, …}，后端 logs_store::Stats 序列化为 camelCase）
+ * —— 级别 chips 上的计数读它；这份响应每次 load 本来就在取，不为 chips 多发请求。
+ */
+type LogStats = { lastId?: number; total?: number; byLevel?: Record<string, number> } | null
 
 /** /api/scheduled-tasks 里的一条（本面板只关心 logsAutoRefresh 这条的形状） */
 type IntervalTask = { id?: string; enabled?: boolean; interval?: number; unit?: string }
@@ -190,6 +202,70 @@ const ALL_CATEGORY_LABEL = '全部分类'
 const LEVEL_LABEL: Record<string, string> = {
   debug: '调试', info: '信息', warn: '警告', error: '错误',
 }
+
+/**
+ * 级别快捷筛选 chips（列表上方那排）的取值与文案：值与级别下拉同一套（'' = 全部，其余 =
+ * 「最低级别及以上」口径 —— 点「警告」筛出的是 warn 及以上，与下拉里「warn 及以上」完全
+ * 同义）。文案复用 LEVEL_LABEL。debug 不设 chip：那一档只留给下拉兜历史数据，常用入口是
+ * 这三个语义级别。tone 是 CSS 类名（见 LOG_LEVEL_CHIPS_CSS），'' = 中性。
+ */
+const LEVEL_CHIPS: readonly { value: string; tone: string; label: string; title: string }[] = [
+  { value: '', tone: '', label: '全部', title: '不限级别，显示全部日志' },
+  { value: 'info', tone: 'info', label: LEVEL_LABEL.info, title: '筛选 info 及以上（含警告、错误）' },
+  { value: 'warn', tone: 'warn', label: LEVEL_LABEL.warn, title: '筛选 warn 及以上（含错误）' },
+  { value: 'error', tone: 'error', label: LEVEL_LABEL.error, title: '仅显示 error（错误）日志' },
+]
+
+/**
+ * 级别 chips 的样式（<style> 随组件渲染一次，规则全部圈在 .log-level-chips / .log-chip 名下）。
+ *
+ * 为什么内嵌而不是进 page-logs.css：本岛的改动约定只落在这一个 tsx 文件里（与账号页
+ * .acct-pool-* 同一做法）。颜色全部取 tokens.css 的语义变量，深浅主题自动跟随。选中态用
+ * 「软底 + 同色描边 + 深字」三件套：信息 = 主色（--primary-soft，即 Element Plus 可选中
+ * Tag 的 primary 语义），警告 / 错误 = 各自的 --warn-soft / --danger-soft（Grafana 级别
+ * chips 的按级别配色），「全部」选中 = 中性按压态；与日志行 .log-lvl 徽章是两套角色，不混。
+ * 全局 button 规则（components.css）会被类选择器盖住，但 button:hover:not(:disabled) 的
+ * 特异性更高，悬停态必须按同等特异性显式写回各态的底色（账号页踩过的坑，照抄结论）。
+ */
+const LOG_LEVEL_CHIPS_CSS = `
+.log-level-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex: none;
+}
+.log-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: none;
+  flex: 0 0 auto;
+  transition: background .15s ease, border-color .15s ease;
+}
+.log-chip b { font-weight: 600; font-variant-numeric: tabular-nums; color: inherit; }
+.log-chip:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-strong); }
+.log-chip.on { color: var(--text); background: var(--surface-3); border-color: var(--border-strong); }
+.log-chip.on:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-strong); }
+.log-chip.on.info { color: var(--primary-fg); background: var(--primary-soft); border-color: var(--primary-bd); }
+.log-chip.on.info:hover:not(:disabled) { background: var(--primary-soft); border-color: var(--primary-bd); }
+.log-chip.on.warn { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-bd); }
+.log-chip.on.warn:hover:not(:disabled) { background: var(--warn-soft); border-color: var(--warn-bd); }
+.log-chip.on.error { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-bd); }
+.log-chip.on.error:hover:not(:disabled) { background: var(--danger-soft); border-color: var(--danger-bd); }
+`
 
 /* ─── 模块级状态（跨渲染的守卫、缓存与入口登记）────── */
 
@@ -481,16 +557,18 @@ async function showCategory(category: string): Promise<void> {
 
 /**
  * 一次查询在界面上的全部读数（对应旧实现的 `current` + 徽标 / 空态所需字段）：matched 是
- * 后端过滤后的条数（清空确认框里的那个数字），file / categories 保留上一次的值（后端没给
- * 就沿用），loaded 区分「正在加载日志…」与「暂无日志」。
+ * 后端过滤后的条数（清空确认框里的那个数字），file / categories / byLevel 保留上一次的值
+ * （后端没给就沿用），loaded 区分「正在加载日志…」与「暂无日志」。
  */
 type PanelData = {
   entries: LogEntry[]; total: number; matched: number
   file: string; categories: Record<string, string>; loaded: boolean
+  /** 各级别总条数（stats 响应的 byLevel）：级别 chips 上的计数；没拿到是空表（chip 只显示名称） */
+  byLevel: Record<string, number>
 }
 
 const EMPTY_DATA: PanelData = {
-  entries: [], total: 0, matched: 0, file: DEFAULT_FILE, categories: {}, loaded: false,
+  entries: [], total: 0, matched: 0, file: DEFAULT_FILE, categories: {}, byLevel: {}, loaded: false,
 }
 
 /** load / render 的入参：silent = 轮询等静默刷新（失败不打扰界面）；resetPage = 筛选变了 */
@@ -498,7 +576,8 @@ type LoadOptions = { silent?: boolean; resetPage?: boolean }
 
 /**
  * 把一份查询结果归一成界面读数。失败（result 为 null）时按旧实现 `render(null)` 的口径：
- * 条目与计数清零，但**路径与分类字典保留**（旧实现只在 result.file / categories 有值时改写）。
+ * 条目与计数清零，但**路径、分类字典与级别计数保留**（旧实现只在 result.file / categories
+ * 有值时改写）。
  */
 function fromResult(result: LogQueryResult | null | undefined, prev: PanelData): PanelData {
   return {
@@ -508,14 +587,53 @@ function fromResult(result: LogQueryResult | null | undefined, prev: PanelData):
     file: result?.file || prev.file,
     // 字典只填一次（旧实现的 dataset.filled='1'）：它是静态的，重拉没有新信息
     categories: Object.keys(prev.categories).length ? prev.categories : readCategories(result?.categories),
+    byLevel: prev.byLevel,
     loaded: true,
   }
+}
+
+/**
+ * 把 stats 响应里的 byLevel 灌进界面读数（级别 chips 上的计数）。键值逐个过 Number 校验：
+ * 响应是外部输入，坏值不进 state。stats 没给 byLevel（失败 / 形状不对）时原样返回 —— 沿用
+ * 上一次的计数，与 file / categories 的「后端没给就沿用」同一口径。
+ */
+function withLevelCounts(data: PanelData, stats: LogStats): PanelData {
+  const raw = stats?.byLevel
+  if (!raw || typeof raw !== 'object') return data
+  const byLevel: Record<string, number> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    const count = Number(value)
+    if (Number.isFinite(count) && count >= 0) byLevel[key] = count
+  }
+  return { ...data, byLevel }
 }
 
 /** 空态文案：还没加载完 / 库里确实没有日志 / 有日志但筛不出来 */
 function emptyText(data: PanelData): string {
   if (!data.loaded) return '正在加载日志…'
   return data.total ? '没有符合筛选条件的日志' : '暂无日志'
+}
+
+/**
+ * 级别筛选 chip：真按钮（可聚焦、可回车），aria-pressed 表达选中态（与账号页 PoolChip
+ * 同款交互，对齐 Element Plus 可选中 Tag / Grafana 级别 chips 的做法）。count 可选 ——
+ * stats 还没到手（首帧 / 失败）就只显示名称。
+ */
+function LevelChip(props: {
+  tone: string
+  active: boolean
+  label: string
+  title: string
+  count?: number
+  onClick(): void
+}) {
+  return (
+    <button type='button' className={cn('log-chip', props.tone, props.active && 'on')}
+      title={props.title} aria-pressed={props.active} onClick={props.onClick}>
+      {props.label}
+      {props.count === undefined ? null : <b>{props.count}</b>}
+    </button>
+  )
 }
 
 function LogsPanel() {
@@ -601,7 +719,9 @@ function LogsPanel() {
       // 把正在看日志的人踢回页首。换筛选 / 页码被夹回则一律回顶。
       const keepTop = resetPage ? 0 : (listRef.current?.scrollTop ?? 0)
       const next = fromResult(result, dataRef.current)
-      applyData(next)
+      // stats 与列表是同一次 load 的并行请求（Promise.all）：级别 chips 上的计数跟着这次
+      // stats 刷新 —— 不为 chips 单独再发请求
+      applyData(withLevelCounts(next, nextStats))
       applyPage(clampPage(pageRef.current, entriesOf(result), sizeRef.current))
       pendingScrollRef.current = pageRef.current === pageBefore ? keepTop : 0
       applyStats(nextStats)
@@ -802,6 +922,16 @@ function LogsPanel() {
 
   /* ─── 筛选控件的事件 ─────────────────────── */
 
+  /**
+   * 级别 chips：与级别下拉走同一条路（onSelectChange → 落盘 + 回第 1 页重拉），两者天然
+   * 同步。已选中的那颗再点不做任何事 —— 筛选值没变，重发请求只是白转一圈；要回「全部」
+   * 点「全部」chip（它就是列表里明确的那一档，不需要「再点一次取消」的隐式语义）。
+   */
+  function onLevelChipClick(value: string): void {
+    if (value === filtersRef.current.level) return
+    onSelectChange({ level: value })
+  }
+
   /** 级别 / 分类都会换掉结果集，页码必须回到第 1 页；变更同时落盘 */
   function onSelectChange(patch: Partial<Filters>): void {
     filtersTouched = true
@@ -951,6 +1081,22 @@ function LogsPanel() {
               onChange={event => onKeywordChange(event.currentTarget.value)} />
             <InputGroupAddon aria-hidden='true'>⌕</InputGroupAddon>
           </InputGroup>
+        </div>
+
+        {/* 级别快捷筛选 chips：与上面的级别下拉写同一份 filters.level（一条 onSelectChange
+            路），给常用三档一个一键直达的入口；选中 chip 的配色见 LOG_LEVEL_CHIPS_CSS。
+            计数读 stats 的 byLevel（load 时并行取回的），「全部」用列表响应自带的 total
+            （= 全库条数，页脚徽标同一个数）；没拿到就只显示名称，不为 chips 单独发请求。 */}
+        <style>{LOG_LEVEL_CHIPS_CSS}</style>
+        <div className='log-level-chips' role='group' aria-label='按级别快捷筛选'>
+          {LEVEL_CHIPS.map(chip => (
+            <LevelChip key={chip.value} tone={chip.tone} title={chip.title}
+              active={filters.level === chip.value} label={chip.label}
+              count={chip.value === ''
+                ? (data.loaded ? data.total : undefined)
+                : data.byLevel[chip.value]}
+              onClick={() => onLevelChipClick(chip.value)} />
+          ))}
         </div>
 
         <div className='log-list' id='log-list' ref={listRef}>

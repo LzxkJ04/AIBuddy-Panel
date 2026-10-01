@@ -312,6 +312,9 @@
   line-height: 1;
 }
 .alias .x:hover:not(:disabled) { opacity: 1; background: color-mix(in srgb, var(--text) 10%, transparent); color: inherit; border-color: transparent; }
+/* base 的 box-shadow: none（0,2,0）压掉了 tokens.css 的全局 :focus-visible ring，
+   补回来：这是映射 chip 里唯一的移除入口（纯 × 图标）。 */
+.alias .x:focus-visible { opacity: 1; box-shadow: var(--ring); }
 /* 行内操作：默认略淡，悬浮行时恢复 */
 .row-actions { display: flex; gap: 4px; justify-content: flex-end; }
 .row-actions button { opacity: .75; }
@@ -504,7 +507,10 @@
   transition: opacity .12s ease, color .12s ease, background .12s ease;
 }
 .pv-row:hover .pv-del,
-.pv-del:focus-visible { opacity: 1; }
+.pv-del:focus-visible { opacity: 1; box-shadow: var(--ring); }
+/* base 的 box-shadow: none（0,1,0）与 tokens.css 的全局 :focus-visible ring 同特异性、
+   本文件在其后加载，ring 被压掉 —— 这颗纯图标（×）按钮透明底，没有 ring 键盘
+   聚焦时只「浮现」却看不出焦点在哪，补回来。 */
 /* hover 时把计数让出来（两者都在右缘，不藏计数就会叠字） */
 .pv-row:hover .pv .n { visibility: hidden; }
 /* :not(:disabled) 是为了压过 components.css 的 `button:hover:not(:disabled)`

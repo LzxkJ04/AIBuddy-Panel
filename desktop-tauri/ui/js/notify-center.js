@@ -13,8 +13,9 @@
    首轮成功拉到数据时把当前水位记为已读（与 app.js 导航徽标同一约定，
    否则一装上就挂着一串历史错误）；日志被清空（id 回落）时水位跟着回落。
 
-   节奏：每 60 秒轮询一次；页面不可见（document.hidden）时跳过；
-   回到前台立即补拉一次。
+   节奏：轮询间隔读偏好 aibuddy-prefs.notifyInterval（分钟，默认 1，允许 1–60，
+   偏好抽屉「通用 → 通知轮询间隔」可改，改完即重排计时器）；页面不可见
+   （document.hidden）时跳过；回到前台立即补拉一次。
 
    结构约定照 ui/js/prefs.js 的 ensureTopbarButtons：铃铛放在**独立容器**
    里插到 #topbar-status 之前（app.js 的 renderTopbarStatus 会整体重写它，
@@ -29,7 +30,8 @@
 
   /* ── 常量 ─────────────────────────────────── */
   var READ_KEY = 'aibuddy-notify-read';   // 已读水位：{ id, ts }（localStorage JSON）
-  var POLL_MS = 60000;                    // 轮询间隔
+  var PREFS_KEY = 'aibuddy-prefs';        // 偏好键（prefs.js 持有，这里只读轮询间隔）
+  var POLL_MIN = 1, POLL_MAX = 60;        // 轮询间隔允许范围（分钟）
   var FETCH_N = 8;                        // 面板最多展示条数
   var FETCH_TIMEOUT_MS = 8000;            // 单次请求兜底超时
   var PAGE_KEY = 'workbuddy-desktop-page';// 与 prefs.js / app.js 共用的当前页记忆键
@@ -397,13 +399,29 @@
     if (document.hidden) return; // 页面不可见：跳过这一轮
     fetchLogs();
   }
+  /* 轮询间隔（可配置）：读偏好里的分钟数并钳位，脏值 / 未设置一律默认 1 分钟 */
+  function pollIntervalMs() {
+    var mins = 1;
+    try {
+      var p = JSON.parse(localStorage.getItem(PREFS_KEY) || 'null');
+      var n = Math.floor(Number(p && p.notifyInterval));
+      if (isFinite(n) && n >= POLL_MIN && n <= POLL_MAX) mins = n;
+    } catch (e) { /* 偏好存档损坏就按默认走 */ }
+    return mins * 60000;
+  }
   function startPolling() {
-    if (startPolling._timer) return;
-    startPolling._timer = setInterval(tick, POLL_MS);
-    // 回到前台立即补拉一次（隐藏期间的轮询都被跳过了）
-    document.addEventListener('visibilitychange', function () {
-      if (!document.hidden) tick();
-    });
+    if (startPolling._timer) clearInterval(startPolling._timer);
+    startPolling._timer = setInterval(tick, pollIntervalMs());
+    if (!startPolling._bound) {
+      startPolling._bound = true;
+      // 偏好抽屉任何一项保存都会派发 aibuddy-prefs-changed（prefs.js apply）：
+      // 收到就重排计时器，「通知轮询间隔」改动立即生效
+      document.addEventListener('aibuddy-prefs-changed', function () { startPolling(); });
+      // 回到前台立即补拉一次（隐藏期间的轮询都被跳过了）
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) tick();
+      });
+    }
   }
 
   /* ── 启动 ─────────────────────────────────── */

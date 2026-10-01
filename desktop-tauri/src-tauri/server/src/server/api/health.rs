@@ -26,6 +26,17 @@ use crate::server::config;
 use crate::server::http::raw_json;
 use crate::server::ServerState;
 
+/// 进程启动时刻（首次取用即记录）：/health 的 uptimeSeconds 数据源。
+fn process_start() -> std::time::Instant {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *START.get_or_init(std::time::Instant::now)
+}
+
+/// 进程已运行秒数（/health 展示用；面板「网关健康」面板读取）。
+pub fn health_uptime_seconds() -> u64 {
+    process_start().elapsed().as_secs()
+}
+
 /// 上游未配置时的说明文案。
 ///
 /// 与 `core::auth::UNCONFIGURED_REASON` 同一份 —— Node 版这条有两处措辞：
@@ -54,7 +65,9 @@ pub async fn handle(State(state): State<ServerState>) -> Response {
     raw_json(json!({
         "status": if healthy { "ok" } else { "degraded" },
         "transport": "upstream-api",
-        "product": "WorkBuddy",
+        "product": "AIBuddy Panel",
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptimeSeconds": (crate::server::api::health_uptime_seconds()) as i64,
         "upstreamConfigured": healthy,
         "upstreamBaseUrl": summary.get("baseUrl").cloned().unwrap_or(Value::Null),
         "authApiBase": summary.get("authApiBase").cloned().unwrap_or(Value::Null),

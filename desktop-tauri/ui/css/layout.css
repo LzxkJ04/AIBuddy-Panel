@@ -103,6 +103,9 @@ body.has-titlebar .shell {
 }
 
 .titlebar-btn:active:not(:disabled) { transform: none; }
+/* base 的 box-shadow: none（0,1,0）与 tokens.css 的全局 :focus-visible ring 同特异性、
+   本文件在其后加载，ring 被压掉 —— 三键是纯图标按钮，透明底上没有 ring 就看不出焦点。 */
+.titlebar-btn:focus-visible { box-shadow: var(--ring); }
 
 /* 关闭键悬停红底白叉（Windows 11 标题栏的惯例语义色）。
    近白走与 button.primary 同一个「彩色底上的前景」配方，不写死 #fff：
@@ -240,6 +243,10 @@ body.has-titlebar .shell {
   color: var(--text);
   border-color: transparent;
 }
+
+/* base 的 box-shadow: none（0,1,0）与 tokens.css 的全局 :focus-visible ring 同特异性、
+   本文件在其后加载，ring 被压掉；导航项平时透明底，没有 ring 键盘用户找不到焦点在哪。 */
+.nav-item:focus-visible { box-shadow: var(--ring); }
 
 .nav-item.active,
 .nav-item.active:hover:not(:disabled) {
@@ -379,6 +386,11 @@ body.has-titlebar .shell {
 /* 同样是给通用 button:hover 让路的问题：这里补 :not(:disabled) 提高特异性，
    再排除 .active，让悬停已选中的档位时保持不变（否则会被盖成灰底）。 */
 .theme-switch button:hover:not(:disabled):not(.active) { background: var(--nav-hover); color: var(--text); }
+
+/* base 的 box-shadow: none（0,1,1）特异性高于 tokens.css 的全局 :focus-visible ring
+   （0,1,0），本文件在其后加载，ring 被压掉 —— 窄窗口下按钮字号收到 0、只剩图标，
+   没有 ring 就完全没有焦点指示。 */
+.theme-switch button:focus-visible { box-shadow: var(--ring); }
 
 .theme-switch button.active,
 .theme-switch button.active:hover {

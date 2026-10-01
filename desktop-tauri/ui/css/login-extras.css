@@ -70,8 +70,52 @@
   to { transform: translateY(-10px); }
 }
 
+/* ── 密码显隐切换（Element Plus 式 eye / eye-off）──
+   按钮由 login-extras.js 注入到 #form 末尾：绝对定位进 #password 右侧，
+   top/height/right 由 JS 按输入框实测几何同步，这里只管外观。
+   配色走组件库令牌（--ui-*，跟随 <html data-theme> 深浅切换）。
+   #form 加 relative 是按钮的定位锚；岛没给表单任何定位样式，纯 CSS
+   补充不影响 React 渲染。 */
+#login-app form { position: relative; }
+
+/* 输入框右侧让出按钮的宽度，占位文字不被眼睛图标压住 */
+#login-app form #password { padding-right: 40px; }
+
+.login-eye {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ui-muted-foreground, #8a8f98);
+  cursor: pointer;
+  transition: color .15s ease, background-color .15s ease;
+}
+
+.login-eye:hover {
+  color: var(--ui-foreground, var(--ui-primary, #7c5cfc));
+  background: color-mix(in srgb, var(--ui-primary, #7c5cfc) 10%, transparent);
+}
+
+.login-eye:focus-visible {
+  outline: none;
+  box-shadow: var(--ui-focus-ring, 0 0 0 3px
+    color-mix(in srgb, var(--ui-primary, #7c5cfc) 25%, transparent));
+}
+
+.login-eye svg {
+  display: block;
+  width: 17px;
+  height: 17px;
+}
+
 /* ── 动效减免 ── */
 @media (prefers-reduced-motion: reduce) {
   #login-app > div { animation: none; }
   .login-deco-dot { animation: none; }
+  .login-eye { transition: none; }
 }

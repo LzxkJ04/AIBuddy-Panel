@@ -1,6 +1,9 @@
 import * as React from 'react'
 import { createRoot } from 'react-dom/client'
-import { SegmentedControl, type SegmentedControlOption } from '@ui'
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  SegmentedControl, type SegmentedControlOption,
+} from '@ui'
 import {
   RANGES, DEFAULT_RANGE, RANGE_KEY, RANGE_LABEL, RANGE_OPTION_LABEL,
   readRange, round1,
@@ -43,10 +46,14 @@ import {
  * 若连高度也响应就会自激循环。页面被藏起来时 clientWidth 是 0，跳过并沿用上一次的宽度。
  *
  * ── 自动刷新 ──────────────────────────────────────────────────
- * 间隔由「定时任务」页配置（`scheduledTasks.reportAutoRefresh`），本页启动时自读一次
- * （syncAutoRefresh），之后接受那边推送（applyAutoRefresh）。定时器长在组件里（配置一变
- * 就重排、卸载即清表），只在**本页可见时**才请求（`document.hidden` 与 `wbApp.currentPage`
- * 都判），离开页面完全静默。兜底 1 秒 = 后端的默认间隔。
+ * 档位有两个来源：页面头部的 Select（localStorage `aibuddy-report-autorefresh`，关闭 /
+ * 30 秒 / 60 秒 / 5 分钟，默认关闭）与「定时任务」页的 reportAutoRefresh（本页启动时自读
+ * 一次 = syncAutoRefresh，之后接受那边推送 = applyAutoRefresh）。用户在页面上明确选了档位
+ * 时以页面为准（控件就在手边，是最直接的意思表示）；「关闭」时回退到定时任务页那条配置，
+ * 那一侧的契约保持不变。定时器长在组件里（间隔一变就重排、卸载即清表），只在**本页可见时**
+ * 才请求（`document.hidden` 与 `wbApp.currentPage` 都判），离开页面完全静默；hidden 期间
+ * 的各拍会被跳过，恢复可见（visibilitychange）立即补拉一次，切回本页的那次拉取仍由
+ * app.js 的 showPage 负责。兜底 1 秒 = 后端的默认间隔。
  *
  * ── 坑：带 Tailwind display 工具类的元素上 hidden 无效 ─────────
  * 组件库的工具类是分层 + !important 的，tokens.css 的 `[hidden] { display:none !important }`
@@ -110,6 +117,32 @@ const RANGE_OPTIONS: readonly SegmentedControlOption<string>[] = RANGES.map(valu
 }))
 
 /**
+ * 页面头部「自动刷新」Select 的档位（value = 秒，'0' = 关闭）与持久化键。
+ * 与时间档位（RANGES / RANGE_KEY）同一套做法：白名单校验 + localStorage 跨次启动恢复；
+ * 键名用面板自己的 aibuddy- 前缀（prefs.js 的 aibuddy-prefs 是同一套）。
+ */
+const AUTOREFRESH_KEY = 'aibuddy-report-autorefresh'
+const AUTOREFRESH_OPTIONS = [
+  { value: '0', label: '关闭' },
+  { value: '30', label: '30 秒' },
+  { value: '60', label: '60 秒' },
+  { value: '300', label: '5 分钟' },
+] as const
+
+/**
+ * 读持久化的自动刷新档位（秒）。只有明确存过合法档位才采纳（与 readRange 同一口径）：
+ * 无值 / 读取抛错 / 值被改坏都回落 0（关闭）。
+ */
+function readUserAutoSecs(): number {
+  try {
+    const saved = localStorage.getItem(AUTOREFRESH_KEY)
+    return AUTOREFRESH_OPTIONS.some(option => option.value === saved) ? Number(saved) : 0
+  } catch {
+    return 0
+  }
+}
+
+/**
  * 各面板头上那枚小问号的说明（原文逐字照抄 index.html 的 data-tip，一条都不能少、
  * 不能改：每一条都是踩过的边界）。仍是 `.tip-q` + data-tip 的既有形态 —— 与定时任务页
  * 同一处理，由 tooltip.js 的 MutationObserver 增强 React 插入的节点。
@@ -170,6 +203,12 @@ function placeholder(text: string, className = 'empty') {
 /** 面板头上的小问号：内容由 tooltip.js 增强（见 TIP_* 的说明），这里只留空壳 */
 function TipQ({ text }: { text: string }) {
   return <span className='tip-q' data-tip={text} />
+}
+
+/** `HH:mm:ss`（本地时钟）：「上次刷新」读数用，padStart 补齐两位 */
+function clockText(at: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`
 }
 
 /**
@@ -489,7 +528,7 @@ function useContainerWidth(): [React.RefObject<HTMLDivElement | null>, number] {
   return [ref, width || FALLBACK_WIDTH]
 }
 
-/* ─── 自动刷新（间隔由「定时任务」页配置）──── */
+/* ─── 自动刷新（页面档位优先，「定时任务」页配置兜底）──── */
 
 /**
  * 启动时自己拉一次间隔配置。
@@ -555,6 +594,13 @@ function ReportPage() {
   const [range, setRange] = React.useState<string>(readRange)
   /** 自动刷新配置：挂载前的推送已经写在模块级变量里，这里取的就是最新的那份 */
   const [auto, setAuto] = React.useState(() => ({ ms: autoRefreshMs, enabled: autoEnabled }))
+  /**
+   * 页面头部 Select 的自动刷新档位（秒）：0 = 关闭（默认），localStorage 跨次启动恢复。
+   * 只喂给 pollMs（见下），没有异步回调要读它的最新值，不必再落一份 ref。
+   */
+  const [autoSecs, setAutoSecs] = React.useState(readUserAutoSecs)
+  /** 最近一次成功加载的时刻：给「上次刷新 HH:mm:ss」读数用（读取失败不更新） */
+  const [lastRefreshAt, setLastRefreshAt] = React.useState<Date | null>(null)
   /** 单位口径（中文亿/万 ⇄ 英文 M/k）变了就整页重算：数值一个都没变，变的只是「怎么写成字」，
    *  所以拨一下开关是瞬时的 —— 不必重新拉一次报表 */
   const [, setUnitsTick] = React.useState(0)
@@ -586,6 +632,9 @@ function ReportPage() {
       if (token !== seq) return summaryValue
       if (!payload || typeof payload !== 'object') throw new Error('后端未返回报表数据')
       summaryValue = payload
+      // 「上次刷新」读数：任何一次成功加载都算（手动换档 / 切页 / 轮询同一口径）；
+      // 过期响应（token !== seq）在上面已经早退，不会把时刻拨回去
+      setLastRefreshAt(new Date())
       applyData({ summary: payload, error: null })
       return summaryValue
     } catch (error) {
@@ -620,6 +669,20 @@ function ReportPage() {
     void loadPanel()
   }, [loadPanel])
 
+  /**
+   * 换自动刷新档位：内存为准，localStorage 只负责跨次启动恢复（与 changeRange 同一套做法）。
+   * 换档**不**立刻拉一次 —— 开启后按间隔轮询，第一拍在所选间隔之后；用户此刻看到的读数
+   * 与时间档位都原样保留（静默，不弹 toast）。
+   */
+  const changeAutoRefresh = React.useCallback((next: string): void => {
+    const known = AUTOREFRESH_OPTIONS.some(option => option.value === next)
+    setAutoSecs(known ? Number(next) : 0)
+    if (!known) return
+    try {
+      localStorage.setItem(AUTOREFRESH_KEY, next)
+    } catch { /* 存储不可用时只影响下次启动，本次会话照常 */ }
+  }, [])
+
   /* ─── 挂载 / 卸载 ───────────────────────── */
 
   React.useEffect(() => {
@@ -641,22 +704,46 @@ function ReportPage() {
   }, [loadPanel, renderData])
 
   /**
-   * 轮询定时器：配置一变就重排（旧实现的 startAuto 每次先 stopAuto），卸载时清表。三个前置
-   * 条件缺一不可：任务已开启、间隔为正、页面可见时才有意义。任务被关掉时不排定时器（而不是
-   * 排一个永不触发的），否则「关掉了但定时器还在跑」会让「间隔改了却像没生效」变得难排查。
+   * 实际生效的轮询间隔（毫秒；0 = 不轮询）。页面 Select 明确选了档位时以它为准 —— 控件
+   * 就在手边，是最直接的意思表示；「关闭」回退到「定时任务」页 reportAutoRefresh 的配置
+   * （applyAutoRefresh 推来的 auto，含任务被关掉的情况）。
+   */
+  const pollMs = autoSecs > 0 ? autoSecs * 1000 : (auto.enabled ? auto.ms : 0)
+
+  /** 一拍轮询：页面可见且上一拍不在途才真的发。定时器与「恢复可见补拉」共用这一段。 */
+  const pollOnce = React.useCallback((): void => {
+    // 只在报表页可见时轮询，避免后台无谓请求
+    if (document.hidden || shared().wbApp?.currentPage !== 'overview') return
+    // 上一轮还没回来就跳过这一拍（见 polling 的说明）
+    if (polling) return
+    polling = true
+    void loadPanel({ silent: true }).finally(() => { polling = false })
+  }, [loadPanel])
+
+  /**
+   * 轮询定时器：间隔（pollMs）一变就重排（旧实现的 startAuto 每次先 stopAuto），卸载时清表。
+   * 间隔为 0（页面 Select 选了关闭、定时任务页那条也没开）不排定时器 —— 而不是排一个永不
+   * 触发的，否则「关掉了但定时器还在跑」会让「间隔改了却像没生效」变得难排查。
    */
   React.useEffect(() => {
-    if (!auto.enabled || auto.ms <= 0) return
-    const timer = window.setInterval(() => {
-      // 只在报表页可见时轮询，避免后台无谓请求
-      if (document.hidden || shared().wbApp?.currentPage !== 'overview') return
-      // 上一轮还没回来就跳过这一拍（见 polling 的说明）
-      if (polling) return
-      polling = true
-      void loadPanel({ silent: true }).finally(() => { polling = false })
-    }, auto.ms)
+    if (pollMs <= 0) return
+    const timer = window.setInterval(pollOnce, pollMs)
     return () => { window.clearInterval(timer) }
-  }, [auto, loadPanel])
+  }, [pollMs, pollOnce])
+
+  /**
+   * 息屏回来立即补拉一次：hidden 期间的各拍都被 pollOnce 跳过，回到前台时最近一拍可能停在
+   * 几分钟前。监听 visibilitychange，恢复可见就补一拍 —— 仍走 pollOnce 的可见性判断，本页
+   * 非 active 时跳过（切回本页的那次拉取由 app.js 的 showPage 负责，不在这里重复打）。
+   */
+  React.useEffect(() => {
+    if (pollMs <= 0) return
+    const onVisibilityChange = (): void => {
+      if (!document.hidden) pollOnce()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => { document.removeEventListener('visibilitychange', onVisibilityChange) }
+  }, [pollMs, pollOnce])
 
   /** 单位口径变了就原地重绘（见 setUnitsTick 的说明） */
   React.useEffect(() => {
@@ -705,6 +792,29 @@ function ReportPage() {
           <div className='head-actions'>
             <SegmentedControl options={RANGE_OPTIONS} value={range}
               onValueChange={changeRange} aria-label='报表时间范围' />
+            {/* ── 自动刷新档位 + 上次刷新读数 ──
+                灰字复用既有的 .panel-sub（tokens 的 --text-3，深浅主题随令牌走，与头顶的
+                档位说明同一视觉档）；时间用等宽数字，秒数跳动时文本不左右抖。Select 是
+                组件库的完整自绘件（浮层走 Portal，不会被面板裁剪），与日志页的筛选同一用法：
+                展示文案显式给 SelectValue，不依赖 value 自动显示。 */}
+            <span className='panel-sub'>自动刷新</span>
+            <Select value={String(autoSecs)}
+              onValueChange={next => changeAutoRefresh(String(next ?? ''))}>
+              <SelectTrigger className='min-w-[76px]' title='自动刷新间隔'
+                aria-label='自动刷新间隔'>
+                <SelectValue>
+                  {AUTOREFRESH_OPTIONS.find(option => option.value === String(autoSecs))?.label ?? '关闭'}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {AUTOREFRESH_OPTIONS.map(option => (
+                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span className='panel-sub' style={{ fontVariantNumeric: 'tabular-nums' }}>
+              上次刷新 {lastRefreshAt ? clockText(lastRefreshAt) : '—'}
+            </span>
           </div>
         </div>
         <div className='panel-body'>

@@ -2,7 +2,10 @@
    AIBuddy Panel · TagsView 页签栏（vue-next-admin 式）
    内容区顶部一条页签栏：当前页高亮（主色文字 + 主色软底 + 主色描边）、
    每个页签可单独关闭（×）、右侧「全部关闭」；首页（overview）固定
-   不可关。页签清单持久化在 localStorage（aibuddy-tags），刷新后保留。
+   不可关（但可以拖拽挪位置）。页签清单持久化在 localStorage
+   （aibuddy-tags，数组顺序即页签顺序），刷新后保留。
+   页签支持鼠标拖拽换位（pointer 实现，6px 阈值：未超阈值按点击切页、
+   超过才进拖拽），拖拽指示与高亮全走 tokens 变量。
 
    接线方式（不改 index.html / app.js）：
    · DOM 由本文件动态注入 —— .main 内、.content 之前；
@@ -35,7 +38,7 @@
     settings: '设置',
   };
 
-  var tags = loadTags(); // 页签 id 有序清单，overview 永远在第一位
+  var tags = loadTags(); // 页签 id 有序清单，overview 恒在其中（位置可变）
   var current = HOME;    // 当前激活页签
   var root = null;       // .tags-view 容器
   var scrollEl = null;   // 左侧页签滚动区
@@ -45,9 +48,10 @@
 
   /* ── 存取 ─────────────────────────────────── */
 
-  /** 读存档：非法 id 丢弃、去重；overview 永远第一（且唯一一份） */
+  /** 读存档：非法 id 丢弃、去重、保序；overview 恒在数组中（缺了补最前，
+   *  在则尊重拖拽存下来的位置 —— 顺序即页签顺序） */
   function loadTags() {
-    var out = [HOME];
+    var out = [];
     try {
       var raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
       if (Array.isArray(raw)) {
@@ -56,6 +60,7 @@
         });
       }
     } catch (e) { /* 存档坏了就回到默认：只剩首页 */ }
+    if (out.indexOf(HOME) === -1) out.unshift(HOME);
     return out;
   }
 
@@ -107,6 +112,21 @@
     root.addEventListener('click', onRootClick);
     root.addEventListener('contextmenu', onRootContextmenu);
     root.addEventListener('keydown', onRootKeydown);
+    root.addEventListener('pointerdown', onRootPointerdown);
+    // 页签拖拽走 pointer 实现，禁掉浏览器原生的 HTML5 拖放（ Ghost 拖影会和
+    // 自绘指示打架；标签本无拖放语义，一概拦下最省心）
+    root.addEventListener('dragstart', function (event) {
+      if (event.target.closest && event.target.closest('.tag')) event.preventDefault();
+    });
+    // 真拖拽结束后浏览器会补一个合成 click（pointerup 落在页签上）：捕获阶段
+    // 吞掉，不然「拖完」会被 onRootClick 当成「点了那个页签」误切页。
+    // suppressClick 在下一次 pointerdown 复位（见 onRootPointerdown）。
+    root.addEventListener('click', function (event) {
+      if (!suppressClick) return;
+      suppressClick = false;
+      event.stopPropagation();
+      event.preventDefault();
+    }, true);
     return true;
   }
 
@@ -306,6 +326,111 @@
       event.preventDefault();
       go(tag.dataset.page);
     }
+  }
+
+  /* ── 页签拖拽换位（pointer 实现，vue-next-admin TagsView 手感）──
+     按下后位移超过 6px 阈值才进拖拽；没超过就不打断原生 click（交给
+     onRootClick 切页）。拖拽经过的目标页签加主色描边 + 插入侧色条
+     （.drop-before / .drop-after，样式在 tags-view.css，全 tokens 变量）。
+     松手按新顺序重排 tags 并 persist()；overview 也在可拖之列
+     （恒在数组中、位置可变）。触屏不启用，保留原生滚动/点按。 */
+  var DRAG_THRESHOLD_SQ = 36; // 6px 的平方：位移平方 ≥ 它才算拖拽
+  var dragState = null;       // { tag, page, x, y, active, target, before }
+  var suppressClick = false;  // 真拖拽结束后吞一次 click，防误切页
+
+  function onRootPointerdown(event) {
+    if (event.button !== 0 || event.isPrimary === false) return;
+    if (event.pointerType === 'touch') return; // 触屏：保留原生滚动/点按
+    var tag = event.target.closest && event.target.closest('.tag');
+    if (!tag) return;
+    if (event.target.closest && event.target.closest('.tag-close')) return; // 关闭钮照常点关
+    suppressClick = false; // 复位：上一次拖拽若没等来 click，别误吞这次点击
+    dragState = {
+      tag: tag,
+      page: tag.dataset.page,
+      x: event.clientX,
+      y: event.clientY,
+      active: false,
+      target: null,
+      before: false,
+    };
+    try { tag.setPointerCapture(event.pointerId); } catch (e) { /* 拿不到就靠 window 兜 */ }
+    window.addEventListener('pointermove', onDragPointermove);
+    window.addEventListener('pointerup', onDragPointerup);
+    window.addEventListener('pointercancel', onDragPointercancel);
+  }
+
+  function unbindDragEvents() {
+    window.removeEventListener('pointermove', onDragPointermove);
+    window.removeEventListener('pointerup', onDragPointerup);
+    window.removeEventListener('pointercancel', onDragPointercancel);
+  }
+
+  /** 清掉所有插入指示（整表重建前 / 换目标时都要先清） */
+  function clearDropMark() {
+    if (!scrollEl) return;
+    scrollEl.querySelectorAll('.drop-before, .drop-after').forEach(function (el) {
+      el.classList.remove('drop-before', 'drop-after');
+    });
+  }
+
+  function onDragPointermove(event) {
+    var d = dragState;
+    if (!d) return;
+    if (!d.active) {
+      var dx = event.clientX - d.x;
+      var dy = event.clientY - d.y;
+      if (dx * dx + dy * dy < DRAG_THRESHOLD_SQ) return; // 阈值内：还算点击
+      d.active = true;
+      document.body.classList.add('tags-dragging');
+      d.tag.classList.add('dragging');
+    }
+    event.preventDefault(); // 拖拽中不给默认行为（选字、原生拖放等）
+    var under = document.elementFromPoint(event.clientX, event.clientY);
+    var target = under && under.closest ? under.closest('.tag') : null;
+    clearDropMark();
+    if (target && target !== d.tag) {
+      var rect = target.getBoundingClientRect();
+      d.before = event.clientX < rect.left + rect.width / 2; // 左半插入其前、右半插其后
+      d.target = target;
+      target.classList.add(d.before ? 'drop-before' : 'drop-after');
+    } else {
+      d.target = null;
+    }
+  }
+
+  /** 收尾：解绑窗口事件、去拖拽态，返回拖拽上下文（可能为 null） */
+  function finishDrag() {
+    unbindDragEvents();
+    document.body.classList.remove('tags-dragging');
+    clearDropMark();
+    var d = dragState;
+    dragState = null;
+    return d;
+  }
+
+  function onDragPointerup() {
+    var d = finishDrag();
+    if (!d) return;
+    d.tag.classList.remove('dragging');
+    if (!d.active) return; // 未超阈值：不吞 click，让 onRootClick 正常切页
+    suppressClick = true;  // 真拖拽：吞掉紧随的合成 click
+    var from = tags.indexOf(d.page);
+    var to = d.target ? tags.indexOf(d.target.dataset.page) : -1;
+    if (from === -1 || to === -1) return; // 没落在别的页签上：顺序不变
+    var insertAt = d.before ? to : to + 1;
+    if (insertAt > from) insertAt -= 1; // 先删后插的下标修正
+    if (insertAt === from) return;      // 原地放下：顺序不变
+    tags.splice(from, 1);
+    tags.splice(insertAt, 0, d.page);
+    persist(); // 新顺序落盘，刷新后保留
+    render();
+  }
+
+  function onDragPointercancel() {
+    var d = finishDrag();
+    if (d && d.active) d.tag.classList.remove('dragging');
+    // pointercancel 不会跟合成 click，无需吞
   }
 
   /* ── 包装 window.showPage ─────────────────── */

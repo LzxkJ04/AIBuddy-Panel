@@ -13,13 +13,14 @@ import {
   Input,
   Label,
   MultiSelect,
+  SegmentedControl,
   Switch,
   type MultiSelectOption,
 } from '@ui'
 import { TableFooter, useClientPaging } from './table-shell'
 
 /**
- * Agent2API · 网关 Key 页（列表 / 新建 / 启停 / 删除 / 可用范围）—— React 岛。
+ * Agent2API · 网关 Key 页（列表 / 新建 / 启停 / 删除 / 可用范围 / 快速接入）—— React 岛。
  *
  * 替换 ui/keys-panel.js（那份用 innerHTML 拼 .models-table 的行、事件走容器委托）。
  * 对外接口与原实现**完全一致**：`window.wbKeysPanel = { load, render, visibleColumns }`
@@ -576,6 +577,141 @@ function KeyModal({ target, providers, modelsByProvider, onClose, onSaved }: Key
   )
 }
 
+/* ─── 快速接入弹窗（带真实 Key 的客户端接入配置）── */
+
+/** 三段配置的分段标识（分段控件受控值） */
+type QuickTabKind = 'openai' | 'curl' | 'anthropic'
+
+const QUICK_TABS: readonly { value: QuickTabKind; label: string }[] = [
+  { value: 'openai', label: 'OpenAI 兼容' },
+  { value: 'curl', label: 'cURL' },
+  { value: 'anthropic', label: 'Anthropic' },
+]
+
+/** Key 掩码的兜底形态（后端 public_json 正常带 masked；缺了就现拼 sk-abc…xyz 样子） */
+function maskedKeyOf(k: KeyEntry): string {
+  if (k.masked) return k.masked
+  const value = k.key ?? ''
+  if (value.length > 12) return `${value.slice(0, 6)}…${value.slice(-3)}`
+  return '••••••••'
+}
+
+/**
+ * 三段接入配置的片段。**口径与「使用文档」页 QuickStartPanel 的 clientSnippet 一致**
+ * （OpenAI SDK 的 base_url 要带 /v1，SDK 只在其后拼 /chat/completions；Anthropic 的
+ * ANTHROPIC_BASE_URL 不带 /v1，Claude Code 自己拼 /v1/messages），差别只有一处：
+ * 占位符「sk-你的网关Key」换成了**这把 Key 的明文** —— 快速接入的意义就是免替换。
+ */
+function quickSnippet(kind: QuickTabKind, base: string, key: string): string {
+  switch (kind) {
+    case 'openai':
+      return [
+        'from openai import OpenAI',
+        '',
+        `client = OpenAI(base_url="${base}/v1", api_key="${key}")`,
+        'resp = client.chat.completions.create(',
+        '    model="模型名（GET /v1/models 里任选）",',
+        '    messages=[{"role": "user", "content": "你好"}],',
+        ')',
+        'print(resp.choices[0].message.content)',
+      ].join('\n')
+    case 'curl':
+      return [
+        `curl ${base}/v1/chat/completions \\`,
+        '  -H "Content-Type: application/json" \\',
+        `  -H "Authorization: Bearer ${key}" \\`,
+        "  -d '{",
+        '    "model": "模型名（GET /v1/models 里任选）",',
+        '    "messages": [{"role": "user", "content": "你好"}],',
+        '    "stream": true',
+        "  }'",
+      ].join('\n')
+    case 'anthropic':
+      return [
+        `export ANTHROPIC_BASE_URL=${base}`,
+        `export ANTHROPIC_AUTH_TOKEN=${key}`,
+      ].join('\n')
+  }
+}
+
+function QuickAccessModal({ target, onClose }: { target: KeyEntry; onClose: () => void }) {
+  const [tab, setTab] = React.useState<QuickTabKind>('openai')
+  /** 明文显示开关：默认掩码，眼睛按钮切全量（与列表行的 显示/隐藏 同一意图） */
+  const [shown, setShown] = React.useState(false)
+
+  const keyValue = target.key ?? ''
+  const base = window.location.origin
+  const snippet = quickSnippet(tab, base, keyValue)
+
+  return (
+    <Dialog
+      open
+      // 只读展示弹窗，没有在途写操作要守卫：Esc / 点遮罩 / ✕ 直接关（不像 KeyModal
+      // 那样要看 savingRef 决定 cancel）
+      onOpenChange={next => { if (!next) onClose() }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>快速接入 · {target.name || '未命名'}</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          <DialogSection>
+            {/* Key 行复用列表 keycell 的结构钩子（page-gateway.css 全局可用）：
+                .kv 自带省略号折叠，明文再长也不撑破弹窗 */}
+            <div className='keycell'>
+              <Label className='text-[12.5px] whitespace-nowrap text-subtle'>Key</Label>
+              <code className='kv'>{shown ? keyValue : maskedKeyOf(target)}</code>
+              <Button size='icon-xs' variant='ghost'
+                aria-label={shown ? '隐藏 Key 明文' : '显示 Key 明文'}
+                title={shown ? '隐藏 Key 明文' : '显示 Key 明文'}
+                onClick={() => setShown(value => !value)}>
+                {shown ? '🙈' : '👁'}
+              </Button>
+              {/* data-copy 是 clipboard.js 的委托钩子（弹窗虽 portal 到 body，委托在
+                  document 上照样命中）；复制永远带明文，与掩码显示互不影响 */}
+              <Button size='sm' variant='ghost' data-copy={keyValue} title='复制 Key'>复制</Button>
+            </div>
+            <p className='text-[11.5px] text-muted-foreground'>⚠ Key 即凭证，请勿外传；泄露后请在本页删除并重建。</p>
+          </DialogSection>
+          <DialogSection>
+            <div className='flex flex-wrap items-center gap-2.5'>
+              <SegmentedControl value={tab} onValueChange={setTab}
+                options={QUICK_TABS} aria-label='选择客户端类型' />
+            </div>
+            {keyValue ? (
+              <div className='relative'>
+                <pre
+                  className='m-0 overflow-x-auto rounded-[var(--r-sm)] bg-[var(--surface-inset)] p-[14px] font-mono text-[12px] leading-[1.7] whitespace-pre'
+                >{snippet}</pre>
+                {/* 复制的是当前分段的完整片段（含真实 Key）：文本挂在 data-copy 属性上，
+                    显示与复制解耦 —— 以后就算把片段里的 Key 也做掩码，复制出的仍是可用的 */}
+                <Button
+                  variant='ghost'
+                  size='icon-xs'
+                  className='copy-btn absolute right-[10px] top-[10px] size-[24px] rounded-[var(--r-xs)] bg-[var(--surface)]'
+                  data-copy={snippet}
+                  title='复制配置'
+                >
+                  ⧉
+                </Button>
+              </div>
+            ) : (
+              <p className='text-[12px] text-muted-foreground'>这把 Key 的明文不在当前数据里，无法生成配置；请刷新页面后重试。</p>
+            )}
+            <p className='text-[11.5px] text-muted-foreground'>
+              Base URL 取当前页面地址（{base}）；跨机访问时换成网关所在主机的地址。
+            </p>
+          </DialogSection>
+        </DialogBody>
+        <DialogFooter>
+          <div className='mr-auto' />
+          <Button variant='outline' onClick={onClose}>关闭</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 /* ─── 页面本体 ───────────────────────────────── */
 
 /** 组件挂载后登记的入口：对外契约的 load / render 都经它转发 */
@@ -605,6 +741,11 @@ function KeysPage() {
   const [pending, setPending] = React.useState<ReadonlySet<string>>(() => new Set())
   /** 弹窗：null = 关着；{ key: null } = 新建 */
   const [modal, setModal] = React.useState<{ key: KeyEntry | null } | null>(null)
+  /**
+   * 快速接入弹窗：只存 key id，条目每次从最新列表里现查 —— 列表刷新 / 那把 Key 被
+   * 删掉时弹窗自动跟上（找不到条目就不渲染），不会拿着一份过期的明文继续展示。
+   */
+  const [quickId, setQuickId] = React.useState<string | null>(null)
   /** 列设置改了 / 契约 render() 被调 → 强制重画（数据没变但可见列变了） */
   const [, setVersion] = React.useState(0)
 
@@ -734,6 +875,8 @@ function KeysPage() {
   const authRequired = data?.authRequired === true
   const enabledCount = list.filter(item => item.enabled).length
   const badgeText = authRequired ? `已启用鉴权 · ${enabledCount} 把 Key 生效` : '未启用鉴权'
+  /** 快速接入弹窗的目标（按 id 从最新列表现查，见 quickId 的说明） */
+  const quickTarget = quickId ? keys.find(item => item.id === quickId) ?? null : null
 
   /** 一个单元格的内容（不含 <td> 外壳）；「某一列长什么样」只有这一处实现 */
   function cell(columnKey: string, k: KeyEntry, busyRow: boolean): React.ReactNode {
@@ -771,6 +914,9 @@ function KeysPage() {
       case 'act':
         return (
           <div className='row-actions'>
+            <Button size='sm' variant='ghost' disabled={busyRow} onClick={() => setQuickId(k.id)}>
+              快速接入
+            </Button>
             <Button size='sm' variant='ghost' disabled={busyRow} onClick={() => setModal({ key: k })}>
               可用范围
             </Button>
@@ -877,8 +1023,15 @@ function KeysPage() {
           onSaved={(next, revealId) => {
             if (revealId) setRevealed(prev => new Set(prev).add(revealId))
             accept(next)
+            // 新建成功后直接打开快速接入：创建 Key 的下一步就是把带真实 Key 的接入配置
+            // 复制给客户端（原先只有一句「记得复制」的 toast，还得去行里找按钮）
+            if (revealId) setQuickId(revealId)
           }}
         />
+      ) : null}
+
+      {quickTarget ? (
+        <QuickAccessModal target={quickTarget} onClose={() => setQuickId(null)} />
       ) : null}
     </section>
   )

@@ -1,12 +1,13 @@
 /**
- * Agent2API · 模型管理页（左栏提供商导航 + 模型表 + 三个弹窗）—— React 岛。
+ * Agent2API · 模型管理页（左栏提供商导航 + 模型表 + 四个弹窗）—— React 岛。
  *
  * 替换 ui/models-panel.js + ui/models-reasoning.js + ui/models-custom-source.js 三个文件。
  * 对外接口与原实现**完全一致**（见 models-panel-state.ts 末尾的 window.wbModelsPanel）：
  * app.js:142 refreshAll() / app.js:570 render() / table-columns.js:74 visibleColumns() /
  * models-fetch-modal.tsx:274 builtinProviders() 与 :646 providerRefreshedAt()。
  *
- * 本文件只放**视图层**（页面骨架 + 左栏 + 模型表 + 映射 / 添加模型两个弹窗 + 挂载）；
+ * 本文件只放**视图层**（页面骨架 + 左栏 + 模型表 + 导出下拉 + 映射 / 添加模型 / 接入配置
+ * 三个弹窗 + 挂载）；
  * 数据层（快照 store / 取数 / 写入 / 对外契约）在 models-panel-state.ts —— 那个文件不是岛
  * （.ts，不被 glob 加载）；「模型能力」弹窗自带一个文件（model-capability-dialog.tsx，它只
  * 依赖数据层，不依赖本文件）。
@@ -46,10 +47,10 @@
  * 数据行（tbody）相反：完全由 React 按 `visibleColumns()` 逐列渲染，与表头读同一份配置。
  *
  * ── 控件替换（组件库）与刻意保留的旧实现 ────────────────
- * 换组件库：左栏导航项（NavItem）、面板头两颗按钮、状态筛选（SegmentedControl）、搜索框
- * （InputGroup）、chip 上的映射开关（Switch size='sm'）、chip 上的等级标与删除 ×（Button 的
+ * 换组件库：左栏导航项（NavItem）、面板头的操作按钮（含「导出」下拉）、状态筛选（SegmentedControl）、
+ * 搜索框（InputGroup）、chip 上的映射开关（Switch size='sm'）、chip 上的等级标与删除 ×（Button 的
  * 2xs / icon-2xs 档）、「＋ 映射」（Button variant='dashed'）、模型 ID 的复制按钮、展开/收起、
- * 行内「移除」、来源徽标（Badge）、三个弹窗整块（Dialog 一族 + Input / Select / Label / Tooltip；
+ * 行内「移除」、来源徽标（Badge）、各弹窗整块（Dialog 一族 + Input / Select / Label / Tooltip；
  * 「模型能力」在 model-capability-dialog.tsx，能力位两列的单元格样式在 page-gateway.css）。
  * 保留旧实现的两处都不是控件本身：
  *   · 自定义家条目外层的 `.pv-row` 定位容器与那颗 `.pv-del` —— HTML 不允许 button 嵌套，
@@ -72,6 +73,7 @@ import {
   DialogContent,
   DialogFooter,
   DialogHeader,
+  DialogSection,
   DialogTitle,
   Input,
   InputGroup,
@@ -79,6 +81,9 @@ import {
   InputGroupInput,
   Label,
   NavItem,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
   SegmentedControl,
   Select,
   SelectContent,
@@ -169,10 +174,21 @@ function ModelsPage() {
     // 只在挂载时跑一次（上面几个函数都读运行期单例，不需要跟着渲染重跑）
   }, [])
 
+  /**
+   * 「生成接入配置」弹窗：打开那一刻冻结的清单快照（首个模型名 + 总数）。冻结而不是让弹窗
+   * 跟着渲染读实时数据 —— 弹窗开着期间目录刷新、搜索词变化都不该改写已经展示给用户的配置。
+   */
+  const [config, setConfig] = React.useState<{ firstModel: string; total: number } | null>(null)
+
   const view = viewData()
   const all = Array.isArray(view.models) ? view.models : []
   const keyword = state.search.trim().toLowerCase()
   const shown = all.filter(model => matches(model, keyword, provider, state.stateFilter))
+  /**
+   * 当前展示的模型 → 可请求的名字（去重保序）。「导出」下拉与接入配置弹窗都吃这一份：
+   * 与表格展示同口径（同受搜索 / 状态 / 提供商筛选约束），空清单时下拉里的两颗按钮禁用。
+   */
+  const exportIds = uniqueModelIds(shown)
   const columns = visibleColumns()
   const columnCount = columns.length
   /**
@@ -584,6 +600,11 @@ function ModelsPage() {
                   onClick={() => refreshModels()}>获取模型</Button>
                 <Button id='btn-add-custom-model' variant='outline' size='sm'
                   onClick={() => openCustomModel()}>＋ 添加模型</Button>
+                {/* 「导出」下拉：当前展示的模型 → OpenAI /v1/models 兼容 JSON 与客户端接入配置。
+                    空清单时下拉里两颗按钮禁用并给出原因（按钮 disabled 后 pointer-events 没了、
+                    title 悬停不出来，所以提示写成浮层里的一行字而不是 title） */}
+                <ExportMenu ids={exportIds}
+                  onOpenConfig={() => setConfig({ firstModel: exportIds[0] || '', total: exportIds.length })} />
                 {/* 「列设置」按钮由 wbColSettings.register 追加到这个容器的末尾（React 不接管它） */}
               </div>
             </div>
@@ -642,6 +663,10 @@ function ModelsPage() {
         : null}
       {state.capability
         ? <CapabilityDialog context={state.capability} onClose={closeCapability} />
+        : null}
+      {config
+        ? <AccessConfigDialog firstModel={config.firstModel} total={config.total}
+            onClose={() => setConfig(null)} />
         : null}
     </>
   )
@@ -991,6 +1016,214 @@ function CustomModelDialog({ initial, onClose }: { initial: CustomModelContext; 
           <div className='mr-auto' />
           <Button variant='outline' onClick={onClose}>取消</Button>
           <Button variant='default' disabled={saving} onClick={() => void save()}>保存</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/* ─── 清单导出与接入模板 ─────────────────────── */
+
+/** 网关 Key 的占位符（与文档页「客户端快速接入」的接入片段同一份文案，用户自行替换） */
+const GATEWAY_KEY_PLACEHOLDER = 'sk-你的网关Key'
+
+/** 导出文件名里的日期段：本地时区的 YYYY-MM-DD（不用 toISOString，那是 UTC 日期） */
+function exportDateStamp(now: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+
+/**
+ * 当前展示的模型行 → 可请求的模型名（去重保序）。「全部」视图里同一个上游模型可能由多家
+ * 同时承载，但对外它就是同一个请求名；去重口径与全仓判重一致（去空白 + 大小写不敏感）。
+ */
+function uniqueModelIds(rows: ManageModel[]): string[] {
+  const seen = new Set<string>()
+  const ids: string[] = []
+  for (const row of rows) {
+    const id = String(row.id || '').trim()
+    if (!id) continue
+    const key = id.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    ids.push(id)
+  }
+  return ids
+}
+
+/**
+ * 导出模型清单 JSON：OpenAI List Models 兼容格式（{object:'list', data:[{id, object:'model',
+ * created, owned_by}]}，created 是规范里的 unix 秒），Blob 下载为 aibuddy-models-<日期>.json。
+ */
+function exportModelsJson(ids: string[]): void {
+  if (!ids.length) return
+  const created = Math.floor(Date.now() / 1000)
+  const payload = {
+    object: 'list',
+    data: ids.map(id => ({ id, object: 'model', created, owned_by: 'aibuddy-panel' })),
+  }
+  const filename = `aibuddy-models-${exportDateStamp(new Date())}.json`
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  // 回收放到下一轮：个别内核在 click 的同步处理里还要读这个地址，立刻 revoke 会下到 0 字节
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+  toast(`✅ 已导出 ${ids.length} 个模型：${filename}`)
+}
+
+/**
+ * 三种客户端的现成接入片段（照 docs-page 的口径：base 不带 /v1，OpenAI SDK 与 curl 补 /v1，
+ * Claude Code 的 ANTHROPIC_BASE_URL 不带）。model 填清单里第一个名字 —— 拿到就能跑。
+ */
+function accessSnippets(
+  base: string, model: string,
+): Array<{ key: string; label: string; hint: string; text: string }> {
+  return [
+    {
+      key: 'openai-sdk',
+      label: 'OpenAI SDK（base_url + 模型列表）',
+      hint: 'openai SDK 与多数 OpenAI 兼容客户端通用',
+      text: [
+        `from openai import OpenAI`,
+        ``,
+        `client = OpenAI(`,
+        `    base_url="${base}/v1",`,
+        `    api_key="${GATEWAY_KEY_PLACEHOLDER}",  # 在「网关 Key」页创建`,
+        `)`,
+        ``,
+        `# 拉取当前可用模型列表`,
+        `models = [m.id for m in client.models.list().data]`,
+        `print(models)`,
+        ``,
+        `# 指定模型发起对话（model 填上面列表里任一名字）`,
+        `resp = client.chat.completions.create(`,
+        `    model="${model}",`,
+        `    messages=[{"role": "user", "content": "你好"}],`,
+        `)`,
+        `print(resp.choices[0].message.content)`,
+      ].join('\n'),
+    },
+    {
+      key: 'curl',
+      label: 'curl',
+      hint: '命令行直接测通',
+      text: [
+        `# 查看模型清单（不受鉴权限制，配 Key 之前就能拉）`,
+        `curl ${base}/v1/models`,
+        ``,
+        `# 发起对话`,
+        `curl ${base}/v1/chat/completions \\`,
+        `  -H "Content-Type: application/json" \\`,
+        `  -H "Authorization: Bearer ${GATEWAY_KEY_PLACEHOLDER}" \\`,
+        `  -d '{"model": "${model}", "messages": [{"role": "user", "content": "你好"}]}'`,
+      ].join('\n'),
+    },
+    {
+      key: 'claude-code',
+      label: 'Claude Code（环境变量）',
+      hint: 'Anthropic 协议接入',
+      text: [
+        `# macOS / Linux（bash）`,
+        `export ANTHROPIC_BASE_URL=${base}`,
+        `export ANTHROPIC_AUTH_TOKEN=${GATEWAY_KEY_PLACEHOLDER}`,
+        `export ANTHROPIC_MODEL=${model}  # 可选：指定默认模型`,
+        `claude`,
+        ``,
+        `# Windows（PowerShell）`,
+        `$env:ANTHROPIC_BASE_URL = "${base}"`,
+        `$env:ANTHROPIC_AUTH_TOKEN = "${GATEWAY_KEY_PLACEHOLDER}"`,
+        `claude`,
+      ].join('\n'),
+    },
+  ]
+}
+
+/**
+ * 面板头部的「导出」下拉（⋯ 菜单同款 Popover 组合）：清单 JSON 与接入配置两个入口。
+ *
+ * 空清单（还没拉到数据 / 没加账号 / 被搜索与筛选滤空）时两颗菜单按钮禁用，浮层顶部给一行
+ * 说明 —— 按钮禁用后 pointer-events 没了、title 悬停不出来，提示必须是看得见的正文。
+ */
+function ExportMenu({ ids, onOpenConfig }: { ids: string[]; onOpenConfig: () => void }) {
+  const [open, setOpen] = React.useState(false)
+  const empty = ids.length === 0
+  const itemClass = 'w-full justify-start px-2 font-normal'
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger render={<Button id='btn-export-models' variant='outline' size='sm'
+        title='导出模型清单，或按当前清单生成客户端接入配置' />}>导出</PopoverTrigger>
+      <PopoverContent align='end' sideOffset={4} className='w-[248px] p-1.5'>
+        <div className='flex flex-col gap-0.5'>
+          {empty ? (
+            <p className='px-2 pb-1 pt-0.5 text-[11.5px] leading-[1.6] text-subtle'>
+              当前没有可导出的模型：请先添加账号或「获取模型」，再放宽搜索与状态筛选。
+            </p>
+          ) : null}
+          <Button variant='ghost' size='sm' className={itemClass} disabled={empty}
+            title={`把当前展示的 ${ids.length} 个模型导出为 OpenAI /v1/models 兼容的 JSON 文件`}
+            onClick={() => { setOpen(false); exportModelsJson(ids) }}>
+            导出模型清单 JSON
+          </Button>
+          <Button variant='ghost' size='sm' className={itemClass} disabled={empty}
+            title='按当前网关地址与模型清单，生成 OpenAI SDK / curl / Claude Code 的现成配置'
+            onClick={() => { setOpen(false); onOpenConfig() }}>
+            生成接入配置…
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/**
+ * 「生成接入配置」弹窗：把当前面板地址（location.origin）与打开那一刻的清单拼成三种客户端的
+ * 现成配置，各带复制按钮 —— 复制走 data-copy（clipboard.js 的全局委托，点一下 toast「已复制」，
+ * .copy-btn 还会给 ✓ 反馈）。文案全走 tokens 变量，深浅主题自动跟随。
+ */
+function AccessConfigDialog({ firstModel, total, onClose }: {
+  firstModel: string; total: number; onClose: () => void
+}) {
+  const base = window.location.origin
+  const sections = accessSnippets(base, firstModel)
+  return (
+    <Dialog open onOpenChange={next => { if (!next) onClose() }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>生成接入配置</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          {/* 中文文案各写一个单行字符串字面量：JSX 会把「跨行的文本」折成一个空格，
+              中文句子里多出半角空格很显眼（docs-page 的脚注同一条踩坑记录） */}
+          <p className='text-xs leading-[1.65] text-subtle'>
+            {'Base URL 取当前面板地址 '}
+            <b className='text-primary-fg'>{base}</b>
+            {'，当前共 '}{total}{' 个模型可用（示例里填了第一个「'}
+            <b className='text-primary-fg'>{firstModel}</b>
+            {'」，其余从 '}<code>GET /v1/models</code>{' 里选）。把「'}
+            {GATEWAY_KEY_PLACEHOLDER}
+            {'」换成「网关 Key」页里创建的 Key。'}
+          </p>
+          {sections.map(section => (
+            <DialogSection key={section.key}>
+              <div className='flex items-center gap-2'>
+                <h3 className='flex-1'>{section.label}</h3>
+                <span className='text-[11.5px] text-subtle'>{section.hint}</span>
+                <Button variant='ghost' size='icon-xs' className='copy-btn' data-copy={section.text}
+                  title={`复制「${section.label}」配置`}>⧉</Button>
+              </div>
+              {/* pre 的正文是表达式子节点（逐字渲染不折行）；whitespace-pre 保留片段里的换行缩进 */}
+              <pre className='m-0 overflow-x-auto rounded-[var(--r-sm)] border border-hairline bg-surface p-3 font-mono text-[12px] leading-[1.7] whitespace-pre text-subtle'>{section.text}</pre>
+            </DialogSection>
+          ))}
+        </DialogBody>
+        <DialogFooter>
+          <div className='mr-auto' />
+          <Button variant='outline' onClick={onClose}>关闭</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

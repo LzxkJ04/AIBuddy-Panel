@@ -94,6 +94,28 @@
   background: color-mix(in srgb, var(--primary) 18%, transparent);
 }
 
+/* ── 页签拖拽换位（js 用 pointer 实现，6px 阈值）──
+   拖拽中的源页签压淡；拖拽经过的目标页签主色描边 + 插入侧竖条
+   （左/右半区区分插前插后）。颜色全走 tokens 变量，深色主题自动适配。 */
+.tags-view .tag.dragging {
+  opacity: .45;
+}
+
+.tags-view .tag.drop-before,
+.tags-view .tag.drop-after {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary-fg);
+}
+
+/* 插入位置侧条：插到目标之前亮左缘、之后亮右缘 */
+.tags-view .tag.drop-before { box-shadow: inset 3px 0 0 0 var(--primary); }
+.tags-view .tag.drop-after  { box-shadow: inset -3px 0 0 0 var(--primary); }
+
+/* 拖拽全程统一抓手光标，避免 hover 指针闪烁 */
+body.tags-dragging,
+body.tags-dragging .tags-view .tag { cursor: grabbing !important; }
+
 /* 右侧「全部关闭」 */
 .tags-view .tags-ops {
   flex: 0 0 auto;

@@ -56,6 +56,11 @@ button.danger:hover:not(:disabled) {
 
 button.ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--text-2); }
 button.ghost:hover:not(:disabled) { background: var(--control-hover); color: var(--text); border-color: transparent; }
+/* 上面那条 base 的 box-shadow: none（特异性 0,1,1）比 tokens.css 全局
+   `:focus-visible { box-shadow: var(--ring) }`（0,1,0）高，且本文件在其后加载，
+   键盘聚焦时全局 ring 会被它压掉 —— ghost 按钮没有背景与描边，ring 是唯一的
+   焦点指示，必须补回来。 */
+button.ghost:focus-visible { box-shadow: var(--ring); }
 
 /* 小号按钮按比例收一号圆角：26px 高配 12.8px 圆角会显得过圆。
    行内控件档（分页、卡片内操作）都落在这一档 */
@@ -144,6 +149,10 @@ button.icon.sm { width: 26px; }
 
 .copy-btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border); color: var(--primary); }
 .copy-btn.done { color: var(--ok); }
+/* base 的 box-shadow: none（0,1,0）与 tokens.css 的全局 :focus-visible ring 同特异性、
+   且本文件在其后加载，ring 会被压掉；这颗纯图标按钮没有文字，焦点圈是它唯一的
+   键盘焦点指示（title 只给读屏，不给聚焦用户），补回来。 */
+.copy-btn:focus-visible { box-shadow: var(--ring); }
 
 /* ─── 说明 / 提示 ─── */
 .detail { color: var(--text-2); font-size: 12px; line-height: 1.65; }

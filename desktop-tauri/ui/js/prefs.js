@@ -5,14 +5,16 @@
            灰色模式 / 色弱模式 / 12 色主题板（圆点 + 名称）/ 自定义主题色
      布局  布局模式四卡（迷你布局示意图）/ 内容宽度 /
            侧栏（Logo 显示 / 选中菜单高亮条 / 折叠时隐藏分组标题）
-     通用  动态标题 / 页面切换进度条 / 面包屑 / 页脚版权 /
-           页面切换动画（无·淡入·滑入）/ 水印
+     通用  动态标题 / 页面切换进度条 / 面包屑 / 页脚版权 / 页签栏显隐 /
+           页面切换动画（无·淡入·滑入）/ 通知轮询间隔 / 水印
      锁屏  锁屏开关 / 锁屏密码 / 自动锁屏分钟数 / 立即锁屏
    页脚  复制偏好 / 导入偏好 / 恢复默认
-   附带：顶栏快捷按钮（自愈）、Ctrl+K 快速跳页、切页进度条、欢迎横幅、
+   附带：顶栏快捷按钮（自愈）、复制网关直链、快速跳页、切页进度条、
+         欢迎横幅（含账号池摘要 chip）、页脚「检查更新」、
          canvas 平铺水印、页面切换动画驱动、
-         锁屏遮罩（Ctrl+L / 抽屉按钮 / 空闲自动锁屏，状态持久化）。
+         锁屏遮罩（抽屉按钮 / 空闲自动锁屏，状态持久化）。
    全部持久化在 localStorage（aibuddy-prefs），刷新即生效。
+   注意：不注册任何键盘快捷键监听，全部功能走按钮与点选交互。
    ───────────────────────────────────────────── */
 
 (function () {
@@ -31,6 +33,7 @@
     layout: 'vertical',       // 布局模式：当前只有 vertical 真实生效
     filter: '',               // 灰色 / 色弱滤镜：'' | gray | weak（互斥）
     watermark: false,         // 平铺水印
+    watermarkText: '',        // 水印文字（空 = 品牌名+日期）
     pageAnim: 'none',         // 页面切换动画：none | fade | slide
     isBreadcrumb: true,       // 顶栏面包屑（vue-next-admin isBreadcrumb）
     isFooter: false,          // 内容区底部版权页脚（vue-next-admin isFooter）
@@ -38,6 +41,8 @@
     isGroupLabel: true,       // 开=折叠时隐藏分组标题；关=折叠/抽屉模式也显示
     topbarGradient: false,    // 顶栏渐变背景（vue-next-admin isTopBarColorGradual）
     menuHighlight: false,     // 选中菜单左侧主色竖条（vue-next-admin 菜单高亮形态）
+    isTagsview: true,         // 内容区顶部页签栏（vue-next-admin isTagsview）
+    notifyInterval: 1,        // 通知中心轮询间隔（分钟，1–60，notify-center.js 读取）
     lockScreen: null          // 占位：sanitize 一律重建为 {enabled,password,minutes}
   };
   function sanitize(p) {
@@ -60,6 +65,10 @@
     p.isGroupLabel = (p.isGroupLabel === undefined || p.isGroupLabel === null) ? true : !!p.isGroupLabel;
     p.topbarGradient = !!p.topbarGradient;
     p.menuHighlight = !!p.menuHighlight;
+    p.isTagsview = (p.isTagsview === undefined || p.isTagsview === null) ? true : !!p.isTagsview;
+    // 通知轮询间隔：分钟数钳位在 1–60，脏值（NaN / 0 / 越界）一律拉回默认 1
+    var ni = Math.floor(Number(p.notifyInterval));
+    p.notifyInterval = (isFinite(ni) && ni >= 1) ? Math.min(ni, 60) : 1;
     // lockScreen 单独重建（旧数据可能是任意脏值，且避免与 DEFAULTS 共用引用）
     var ls = (p.lockScreen && typeof p.lockScreen === 'object') ? p.lockScreen : {};
     var mins = Math.floor(Number(ls.minutes));
@@ -103,6 +112,8 @@
     menu: '<path d="M3 6h18M3 12h18M3 18h18"/>',
     x: '<path d="M6 6l12 12M18 6 6 18"/>',
     check: '<path d="M4.5 12.5 9.5 17.5 19.5 6.5"/>',
+    /* lucide link（链环）：复制网关直链按钮用 */
+    link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
     chevR: '<path d="m9 5 7 7-7 7"/>'
   };
 
@@ -165,6 +176,7 @@
     root.setAttribute('data-pref-grouplabel', prefs.isGroupLabel ? 'on' : 'off');
     root.setAttribute('data-pref-topbar-grad', prefs.topbarGradient ? 'on' : 'off');
     root.setAttribute('data-pref-navhl', prefs.menuHighlight ? 'on' : 'off');
+    root.setAttribute('data-pref-tags', prefs.isTagsview ? 'on' : 'off');
     if (prefs.primary) {
       var c = prefs.primary;
       root.style.setProperty('--primary', c);
@@ -196,7 +208,9 @@
     document.dispatchEvent(new CustomEvent('aibuddy-prefs-changed', { detail: prefs }));
   }
 
-  /* ── 页脚版权（vue-next-admin isFooter）：主内容区底部固定一行 ── */
+  /* ── 页脚版权（vue-next-admin isFooter）：主内容区底部固定一行 ──
+     行右侧带一个小按钮「检查更新」：调 /api/update/check 比对当前版本，
+     结果用 toast 提示；请求期间按钮禁用防抖，失败（含未登录 401）提示「检查失败」。 */
   function ensureFooter() {
     var old = document.getElementById('pref-footer');
     if (!prefs.isFooter) { if (old && old.parentNode) old.parentNode.removeChild(old); return; }
@@ -205,14 +219,69 @@
     var brand = 'AIBuddy Panel';
     var h1 = document.querySelector('.brand-text h1');
     if (h1 && h1.textContent.trim()) brand = h1.textContent.trim();
+    var copy = '© ' + new Date().getFullYear() + ' ' + brand + ' · 基于 agent2api';
     var f = old || el('div', 'pref-footer');
     f.id = 'pref-footer';
-    f.textContent = '© ' + new Date().getFullYear() + ' ' + brand + ' · 基于 agent2api';
+    if (!f.querySelector('.pref-footer-check')) {
+      // 内容只装配一次：反复 apply() 不重建节点，进行中的检查不会被中途打断
+      var txt = el('span', 'pref-footer-copy');
+      var btn = el('button', 'pref-footer-check');
+      btn.type = 'button';
+      btn.textContent = '检查更新';
+      btn.addEventListener('click', function () { checkUpdate(btn); });
+      f.appendChild(txt);
+      f.appendChild(btn);
+    }
+    var span = f.querySelector('.pref-footer-copy');
+    if (span && span.textContent !== copy) span.textContent = copy;
     if (!old) host.appendChild(f);
   }
 
+  /* 「检查更新」：当前版本优先取品牌区 .brand-version 的文本（如 v1.2.3），
+     取不到再问一次 /api/update/status；都没有就缺省传空（后端按无法比较处理）。 */
+  function checkUpdate(btn) {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    var done = function () { btn.disabled = false; };
+    var current = '';
+    var bv = document.querySelector('.brand-version');
+    if (bv && bv.textContent) {
+      var m = bv.textContent.trim().match(/^v?([0-9][0-9A-Za-z.\-+]*)$/i);
+      if (m) current = m[1];
+    }
+    var ask = function () {
+      fetch('/api/update/check' + (current ? '?current=' + encodeURIComponent(current) : ''),
+        { headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (env) {
+          done();
+          var d = env && env.data;
+          if (d && d.hasUpdate === true) {
+            var v = String(d.latestVersion || '');
+            if (v && v.charAt(0) !== 'v' && v.charAt(0) !== 'V') v = 'v' + v;
+            toast('发现新版本 ' + v + '，可在 设置→更新 下载');
+          } else if (d && d.hasUpdate === false) {
+            toast('已是最新版本');
+          } else {
+            toast('检查失败', 'err'); // 未登录 / 无法比较版本 / 空响应都归到这里
+          }
+        })
+        .catch(function () { done(); toast('检查失败', 'err'); });
+    };
+    if (current) { ask(); return; }
+    // 品牌区没有版本号（未登录或后端没返回）：退而求其次问 /api/update/status
+    fetch('/api/update/status', { headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (env) {
+        var v = env && env.data && env.data.currentVersion;
+        if (typeof v === 'string' && v && v !== 'web') current = v;
+      })
+      .catch(function () {})
+      .then(function () { ask(); });
+  }
+
   /* ── 锁屏（vue-next-admin isLockScreen 形态）──
-     Ctrl+L / 抽屉「立即锁屏」按钮立即锁屏；开启后空闲达到设定分钟数自动锁屏；
+     抽屉「立即锁屏」按钮立即锁屏；开启后空闲达到设定分钟数自动锁屏；
      锁屏状态持久化在 aibuddy-lockscreen-active（刷新仍在锁屏），解锁即清除。 */
   var LOCK_KEY = 'aibuddy-lockscreen-active';
   var lockEl = null, lockTimeEl = null, lockDateEl = null, lockErrEl = null;
@@ -325,14 +394,7 @@
     restartIdleTimer();
   }
 
-  /* 立即锁屏快捷键：开启锁屏后才接管 Ctrl+L */
-  document.addEventListener('keydown', function (e) {
-    if ((e.ctrlKey || e.metaKey) && (e.key === 'l' || e.key === 'L')) {
-      if (!(prefs.lockScreen && prefs.lockScreen.enabled)) return;
-      e.preventDefault();
-      lockNow();
-    }
-  });
+
   /* 空闲侦测：鼠标 / 键盘活动重置自动锁屏计时（10s 节流，避免高频重排计时器） */
   ['mousemove', 'mousedown', 'keydown', 'wheel', 'touchstart'].forEach(function (ev) {
     document.addEventListener(ev, function () {
@@ -352,7 +414,8 @@
     if (h1 && h1.textContent.trim()) brand = h1.textContent.trim();
     var d = new Date();
     var ds = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-    var text = brand + ' · ' + ds;
+    var custom = (typeof prefs.watermarkText === 'string' && prefs.watermarkText.trim());
+    var text = custom ? prefs.watermarkText.trim() : brand + ' · ' + ds;
     var w = 280, h = 170;
     var canvas = document.createElement('canvas');
     canvas.width = w; canvas.height = h;
@@ -399,8 +462,11 @@
       prefs.theme = next; save(prefs); apply(); syncThemeBtn();
       toast('主题：' + (next === 'light' ? '浅色' : next === 'dark' ? '深色' : '跟随系统'));
     });
-    var btnSearch = mk('pref-btn-search', 'tb-icon-btn', '搜索页面（Ctrl+K）', svg(P.search, 15));
+    var btnSearch = mk('pref-btn-search', 'tb-icon-btn', '搜索页面', svg(P.search, 15));
     btnSearch.addEventListener('click', openSearchDialog);
+    // 复制网关直链：客户端接入的第一步就是把 Base URL 粘进 OpenAI 兼容客户端
+    var btnLink = mk('pref-btn-link', 'tb-icon-btn', '复制 OpenAI 兼容 Base URL', svg(P.link, 15));
+    btnLink.addEventListener('click', copyGatewayLink);
     var btnPrefs = mk('pref-btn-prefs', 'tb-icon-btn', '偏好设置', svg(P.gear, 15));
     btnPrefs.addEventListener('click', openDrawer);
     var burger = mk('pref-hamburger', 'tb-icon-btn pref-hamburger', '打开 / 收起菜单', svg(P.menu, 15));
@@ -421,6 +487,7 @@
     holder.textContent = '';
     holder.appendChild(burger);
     holder.appendChild(btnSearch);
+    holder.appendChild(btnLink);
     holder.appendChild(btnTheme);
     holder.appendChild(btnPrefs);
     bar.parentNode.insertBefore(holder, bar);
@@ -444,6 +511,30 @@
     syncThemeBtnRef = syncThemeBtn; // 抽屉里切主题时同步顶栏图标
   }
 
+  /* ── 复制网关直链：OpenAI 客户端接入用的 Base URL（origin + /v1）── */
+  function copyGatewayLink() {
+    var url = location.origin + '/v1';
+    var ok = function () { toast('已复制 Base URL：' + url); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(ok, function () { if (legacyCopy(url)) ok(); });
+    } else {
+      if (legacyCopy(url)) ok();
+    }
+  }
+  /* 剪贴板降级：隐藏 textarea + execCommand（老内核 / 非安全上下文用） */
+  function legacyCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:-999px;left:-999px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    var done = false;
+    try { done = document.execCommand('copy'); } catch (e) {}
+    ta.remove();
+    if (!done) toast('复制失败，请手动复制：' + text, 'err');
+    return done;
+  }
+
   function toast(msg, type) {
     var host = document.querySelector('.content-inner') || document.body;
     var t = el('div', 'pref-toast' + (type === 'err' ? ' err' : ''));
@@ -453,14 +544,14 @@
     setTimeout(function () { t.classList.remove('show'); setTimeout(function () { t.remove(); }, 300); }, 2200);
   }
 
-  /* ── Ctrl+K 快速跳页（键盘上下选择 / 回车跳转 / Esc 关闭）── */
+  /* ── 快速跳页（点顶栏放大镜打开；Esc 关闭）── */
   var PAGES = [
     ['overview', '报表'], ['accounts', '账号'], ['gateway', '模型管理'],
     ['proxies', '网络代理'], ['keys', '网关 Key'], ['docs', '文档'],
     ['requests', '请求日志'], ['logs', '日志'], ['tasks', '定时任务'], ['settings', '设置']
   ];
   function openSearchDialog() {
-    if (isLocked()) return; // 锁屏时快捷键与按钮都失效
+    if (isLocked()) return; // 锁屏时入口按钮失效
     if (document.getElementById('pref-search-mask')) return;
     var mask = el('div', 'pref-mask');
     mask.id = 'pref-search-mask';
@@ -468,9 +559,8 @@
     box.innerHTML =
       '<div class="pref-search-head">' + svg(P.search, 15) +
       '<input id="pref-search-input" placeholder="搜索页面，回车跳转…" autocomplete="off" spellcheck="false">' +
-      '<kbd class="pref-search-kbd">Ctrl K</kbd></div>' +
       '<div class="pref-search-list"></div>' +
-      '<div class="pref-search-foot"><span><kbd class="pref-search-kbd">上下键</kbd> 选择</span><span><kbd class="pref-search-kbd">回车</kbd> 跳转</span><span><kbd class="pref-search-kbd">Esc</kbd> 关闭</span></div>';
+      '<div class="pref-search-foot"><span>输入名称后点击条目跳转，Esc 关闭</span></div>';
     mask.appendChild(box);
     document.body.appendChild(mask);
     var input = box.querySelector('input');
@@ -517,12 +607,7 @@
     render('');
     input.focus();
   }
-  document.addEventListener('keydown', function (e) {
-    if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
-      if (isLocked()) return; // 锁屏时屏蔽快捷跳页
-      e.preventDefault(); openSearchDialog();
-    }
-  });
+  /* 快速跳页只从顶栏放大镜按钮进入（不设键盘快捷键），锁屏时入口一并失效 */
 
   /* ── 偏好设置抽屉 ─────────────────────────── */
   function openDrawer() {
@@ -753,7 +838,10 @@
           '顶栏显示当前页面位置（如「首页 / 报表」）；手机窄屏下始终隐藏'));
         body.appendChild(row('页脚版权', toggle(function () { return prefs.isFooter; },
           function (v) { prefs.isFooter = v; save(prefs); apply(); }),
-          '在内容区底部显示固定版权行「© 2026 AIBuddy Panel · 基于 agent2api」'));
+          '在内容区底部显示固定版权行「© 2026 AIBuddy Panel · 基于 agent2api」，右侧附带「检查更新」小按钮'));
+        body.appendChild(row('页签栏', toggle(function () { return prefs.isTagsview; },
+          function (v) { prefs.isTagsview = v; save(prefs); apply(); }),
+          '内容区顶部显示已打开页面的页签条，可单独关闭页签（vue-next-admin isTagsview）'));
         body.appendChild(section('页面切换动画'));
         var seg = el('div', 'pref-seg');
         [['none', '无'], ['fade', '淡入'], ['slide', '滑入']].forEach(function (o) {
@@ -769,16 +857,47 @@
         });
         body.appendChild(seg);
         body.appendChild(hint('切换页面时的过场效果；系统开启「减少动态效果」时自动禁用。'));
+        body.appendChild(section('通知'));
+        // 通知轮询间隔：写键即存并广播（apply() 会派发 aibuddy-prefs-changed，
+        // notify-center.js 监听该事件重排轮询计时器）
+        var niIn = el('input', 'pref-inp num');
+        niIn.type = 'number';
+        niIn.min = '1'; niIn.max = '60'; niIn.step = '1';
+        niIn.value = String(prefs.notifyInterval);
+        niIn.addEventListener('input', function () {
+          var n = Math.floor(Number(niIn.value));
+          if (!isFinite(n) || n < 1) n = 1;
+          if (n > 60) n = 60;
+          prefs.notifyInterval = n;
+          save(prefs); apply();
+        });
+        niIn.addEventListener('change', function () { niIn.value = String(prefs.notifyInterval); });
+        body.appendChild(row('通知轮询间隔（分钟）', niIn,
+          '顶栏通知中心每隔多久拉取一次网关事件，允许 1–60 分钟，修改立即生效'));
         body.appendChild(section('其他'));
         body.appendChild(row('水印', toggle(function () { return prefs.watermark; },
           function (v) { prefs.watermark = v; save(prefs); apply(); }),
-          '在页面最上层平铺品牌名与当前日期，适用于录屏与演示场景'));
+          '在页面最上层平铺半透明文字，适用于录屏与演示场景'));
+        var wmRow = row('水印文字', (function () {
+          var inp = document.createElement('input');
+          inp.type = 'text';
+          inp.className = 'pref-text-input';
+          inp.maxLength = 40;
+          inp.placeholder = '留空 = 品牌名 + 日期';
+          inp.value = prefs.watermarkText || '';
+          inp.addEventListener('input', function () {
+            prefs.watermarkText = inp.value.trim();
+            save(prefs); apply();
+          });
+          return inp;
+        })(), '自定义水印内容（最长 40 字），输入即生效；关闭水印后本项不显示。');
+        body.appendChild(wmRow);
       }
       if (tabName === 'lock') {
         body.appendChild(section('锁屏'));
         body.appendChild(row('启用锁屏', toggle(function () { return prefs.lockScreen.enabled; },
           function (v) { prefs.lockScreen.enabled = v; save(prefs); apply(); }),
-          '开启后按 Ctrl+L 立即锁屏；空闲达到下方分钟数也会自动锁屏'));
+          '开启后可点下方「立即锁屏」；空闲达到下方分钟数也会自动锁屏'));
         var pwIn = el('input', 'pref-inp pw');
         pwIn.type = 'password';
         pwIn.value = prefs.lockScreen.password;
@@ -877,6 +996,7 @@
       '<div class="ab-icon"><svg viewBox="0 0 24 24" width="26" height="26"><rect width="24" height="24" rx="5.4" class="mark"/><g fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5.23 9.24h10.71"/><path d="M15.94 6.72 18.77 9.24 15.94 11.76"/><path d="M18.77 14.76H8.06"/><path d="M8.06 12.24 5.23 14.76 8.06 17.28"/></g></svg></div>' +
       '<div class="ab-main"><div class="ab-hello">' + hello + '，欢迎回来</div>' +
       '<div class="ab-date">' + now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0') + '</div></div>' +
+      '<span class="ab-pool" hidden></span>' +
       '<div class="ab-steps">' +
       '<span class="ab-chip ok">' + svg(P.check, 12) + '<span>网关运行中</span></span>' +
       step('1', '添加账号') + '<span class="ab-arrow">' + svg(P.chevR, 12) + '</span>' +
@@ -884,7 +1004,39 @@
       step('3', '客户端接入 /v1') +
       '</div>';
     page.insertBefore(banner, page.firstChild);
+    fetchPool(banner);
   }
+
+  /* 账号池摘要：横幅步骤区前两枚真实数据 chip（账号数 / 请求记录条数）。
+     数据来自 GET /api/storage（条数在 data.database 下，available = 库可用）；
+     401（还没登录）/ 失败 / 库不可用一律保持隐藏，绝不摆假数字。
+     首次失败 8 秒后补试一次（覆盖「横幅先画出来、登录刚好完成」的时序），再失败就放弃。 */
+  function fetchPool(banner, retried) {
+    var retry = function () {
+      if (!retried && banner.parentNode) setTimeout(function () { fetchPool(banner, true); }, 8000);
+    };
+    fetch('/api/storage', { headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (env) {
+        var d = env && env.data && env.data.database;
+        if (d && d.available === true && banner.parentNode) fillPool(banner, d);
+        else retry();
+      })
+      .catch(retry);
+  }
+  function fillPool(banner, d) {
+    var pool = banner.querySelector('.ab-pool');
+    if (!pool || pool.childNodes.length) return; // 已填过就不重复填
+    var mk = function (label, n) {
+      var c = el('span', 'ab-chip ab-pool-chip');
+      c.textContent = label + ' ' + numOfChips(n);
+      return c;
+    };
+    pool.appendChild(mk('账号', d.accounts));
+    pool.appendChild(mk('请求记录', d.requests));
+    pool.hidden = false;
+  }
+  function numOfChips(v) { var n = Math.floor(Number(v)); return isFinite(n) && n >= 0 ? n : 0; }
   var bannerTimer = setInterval(function () {
     if (document.querySelector('.page[data-page="overview"].active')) ensureBanner();
   }, 1200);

@@ -74,6 +74,10 @@
               transform .15s ease, box-shadow .15s ease;
 }
 
+/* base 的 box-shadow: var(--shadow-1)（0,1,0）与 tokens.css 的全局 :focus-visible ring
+   同特异性、本文件在其后加载，ring 被压掉 —— 补回来，键盘切分类时才有焦点指示。 */
+.settings-nav-item:focus-visible { box-shadow: var(--ring); }
+
 /* 分类图标槽：尺寸与主侧栏的 .nav-item .ico 一致（17px 盒、currentColor，
    选中态自动变主题色；svg 撑满盒子）。间距用 margin 而不是 gap —— 老浏览器之外
    没差别，但这里与 .nav-item 的写法保持一致，两处对照着读更容易。 */

@@ -1,15 +1,27 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { createRoot } from 'react-dom/client'
-import { Button } from '@ui'
+import { Button, Spinner } from '@ui'
 
 /**
  * 文档页（接口地址）—— React 岛。
  *
  * 替换的是 ui/index.html 里 `<section class="page" data-page="docs">` 那 74 行静态 DOM
  * （接口条 .ep-panel / .ep-list / .ep-row / .ep-group / .panel-foot）。对外**没有任何
- * window 接口**：这一页是纯展示，没有数据、没有交互状态，app.js 切到本页时只调
- * `window.wbPortPanel.sync()`（补一次真实端口），与本岛无关，调用方一行都不用改。
+ * window 接口**，app.js 切到本页时只调 `window.wbPortPanel.sync()`（补一次真实端口），
+ * 与本岛无关，调用方一行都不用改。页面共三块面板：接口地址（纯展示）、客户端快速接入
+ * （本地状态）与网关健康（有网络请求，见下）。
+ *
+ * ── 网关健康：探活不在挂载时打，在「进页面」时打 ────────────────
+ * 本岛在应用启动时就挂载（islands/ui.js 统一加载），不是切到本页才挂载；要是在挂载
+ * useEffect 里直接探活，用户一辈子不进文档页也会白打几发请求。app.js 切页只在本岛
+ * 挂载的 section 上切 `.active` 类（从不碰子节点，两边不抢 DOM），于是拿 class 变化
+ * 当「进页面」的信号：MutationObserver 盯住 section 的 class，每次拿到 `.active`
+ * 自动检测一轮（挂载时就已在本页 —— 上次会话停在这页 —— 也算一次）。不新增
+ * window 接口、不改 app.js：showPage 的 docs 分支保持只调 wbPortPanel.sync()。
+ * 探活对象按部署者视角挑的：/health 与 /v1/models 同源、免鉴权（未配 Key 的空
+ * 模型清单同样算成功），未登录时 /api/update/status、/api/storage 读不到只回落
+ * 「—」/ 省略脚注，不算失败。
  *
  * ── 挂载：面板岛模式，root 直接建在既有的页面区块上 ──────────────
  * 先 `section.replaceChildren()` 清掉静态骨架，再把 root 建在这个 section 上（不套宿主
@@ -243,7 +255,7 @@ function QuickStartPanel() {
     <section className='panel ep-panel'>
       <div className='panel-head'>
         <h2>客户端快速接入</h2>
-        <span className='tip-q'
+        <span className='tip-q' tabIndex={0} aria-label='接口地址说明'
           data-tip='按上方 Base URL 现生成接入片段；把「sk-你的网关Key」换成「网关 Key」页里创建的 Key，模型名从 GET /v1/models 里选。'></span>
       </div>
       <div className='ep-list'>
@@ -278,6 +290,255 @@ function QuickStartPanel() {
   )
 }
 
+/* ─── 网关健康：同源探活 + 引擎版本，三张状态卡 ─── */
+
+/**
+ * 一条探活的读数。`ok: null` = 还没测过（首帧给占位「—」）；失败细分两档，提示语
+ * 也跟着分开：`net` = fetch 抛错（浏览器根本没连上本站 —— 不一定是网关挂了，
+ * 地址 / 端口不对、跨机访问网络不通都长这样）；`http` = 本站回了非 2xx（进程在
+ * 响应，是这个端点没过 —— 与「连不上」是两回事）。
+ */
+type ProbeOutcome = {
+  ok: boolean | null
+  /** 本站往返耗时（performance.now 差值四舍五入，毫秒）；只在成功时展示 */
+  ms: number
+  why: '' | 'net' | 'http'
+  /** why === 'http' 时的状态码（net 恒为 0） */
+  status: number
+  /** 成功响应解出的 JSON（解析失败给 null；探活判定只看 HTTP 状态） */
+  body: unknown
+}
+
+const IDLE_PROBE: ProbeOutcome = { ok: null, ms: 0, why: '', status: 0, body: null }
+
+/**
+ * GET 一个同源端点：网络错误与 HTTP 错误分开报、**永不抛出** —— 探活是页面里最
+ * 不该有副作用的一类请求，任何异常都折进读数里。cache: 'no-store'：探活要的是
+ * 「此刻的网关」，不是上一刻的缓存。
+ */
+async function probeGet(url: string): Promise<ProbeOutcome> {
+  const started = performance.now()
+  try {
+    const res = await fetch(url, { cache: 'no-store' })
+    const ms = Math.round(performance.now() - started)
+    const body = res.ok ? await res.json().catch(() => null) : null
+    return { ok: res.ok, ms, why: res.ok ? '' : 'http', status: res.status, body }
+  } catch {
+    return { ok: false, ms: Math.round(performance.now() - started), why: 'net', status: 0, body: null }
+  }
+}
+
+/** /v1/models 响应里的 OpenAI 形态 data 数组（缺字段 / 形状不对给 null） */
+function modelsArrayOf(body: unknown): unknown[] | null {
+  const data = (body as { data?: unknown } | null)?.data
+  return Array.isArray(data) ? data : null
+}
+
+/** 管理 API 的 `{success, data}` 信封里取 data（形状不对给 null） */
+function envelopeData(body: unknown): Record<string, unknown> | null {
+  const data = (body as { data?: unknown } | null)?.data
+  return data !== null && typeof data === 'object' ? (data as Record<string, unknown>) : null
+}
+
+/** 探活失败的友好原因（空串 = 没失败 / 还没测）。连不上 ≠ 网关挂了：两种失败分开说 */
+function probeError(p: ProbeOutcome): string {
+  if (p.ok !== false) return ''
+  if (p.why === 'net') return '无法连接本站：网关可能没启动，或地址 / 端口不对；跨机访问时先检查网络'
+  return `本站有响应，但这个端点回了 HTTP ${p.status}`
+}
+
+/** 三张卡下方的小字说明（失败原因另起一行红字，见 probeError，不混在这句里） */
+const GATEWAY_HINT = 'GET /health 不需要鉴权；延迟是浏览器到本站一个来回的耗时'
+const MODELS_HINT = '客户端接入的第一步：GET /v1/models 不需要鉴权；没配 Key 时给空清单，也算可用'
+const VERSION_HINT = '网关内核的版本号，登录面板后从 GET /api/update/status 读；读不到显示「—」'
+
+/** 面板头问号的说明全文 */
+const HEALTH_TIP = '三张卡回答「客户端能不能接」：网关进程探 GET /health、模型清单探 '
+  + 'GET /v1/models，两条都不需要鉴权、与页面同源直连；引擎版本要登录面板后才读得到。'
+  + '红色不一定是网关挂了 —— 浏览器连不上本站（地址 / 端口 / 网络不通）也会红，'
+  + '卡片下方的小字会区分两种情形。'
+
+/** 面板的全部读数：探活结果与两条管理 API 的派生值，一轮检测整体替换一次 */
+type HealthSnapshot = {
+  /** 检测在途（按钮转圈禁用；卡片保留上一轮读数，按钮自己表达「正在测」） */
+  checking: boolean
+  gateway: ProbeOutcome
+  models: ProbeOutcome
+  /** /v1/models 的 data 长度（只在探测成功且形状正确时有效） */
+  modelCount: number
+  /** 引擎版本号；空串 = 没读到（卡片显示「—」） */
+  version: string
+  /** /api/storage 的账号 / 请求数；null = 没读到（脚注整段省略） */
+  accounts: number | null
+  requests: number | null
+}
+
+const IDLE_SNAPSHOT: HealthSnapshot = {
+  checking: false,
+  gateway: IDLE_PROBE,
+  models: IDLE_PROBE,
+  modelCount: 0,
+  version: '',
+  accounts: null,
+  requests: null,
+}
+
+/** 状态卡的色调：ok 绿 / bad 红 / info 靛（版本读到了）/ idle 灰（还没测过）。
+ *  全部取自 tokens 语义色，深浅主题自适应 —— 卡片里没有一处写死颜色 */
+type CardTone = 'ok' | 'bad' | 'info' | 'idle'
+
+const DOT_COLOR: Record<CardTone, string> = {
+  ok: 'var(--ok)',
+  bad: 'var(--danger)',
+  info: 'var(--info)',
+  idle: 'var(--text-3)',
+}
+
+const VALUE_COLOR: Record<CardTone, string> = {
+  ok: 'var(--ok)',
+  bad: 'var(--danger)',
+  info: 'var(--text)',
+  idle: 'var(--text-3)',
+}
+
+/**
+ * 一张状态卡：上排「圆点 + 名字」，中排大字读数，下排小字说明（失败再补一行红字）。
+ * 卡身用 .ep-group / 代码块同款的做法：--surface-inset 抬一层 + --hairline 描边，
+ * 与面板内其它「凹下去的小块」视觉同族。
+ */
+function HealthCard({ name, tone, value, hint, error }: {
+  name: string
+  tone: CardTone
+  value: string
+  hint: string
+  error: string
+}) {
+  return (
+    <div className='min-w-[176px] flex-1 rounded-[var(--r-sm)] border border-[var(--hairline)] bg-[var(--surface-inset)] p-[12px]'>
+      <div className='flex items-center gap-[7px]'>
+        <span aria-hidden className='size-[8px] shrink-0 rounded-full' style={{ background: DOT_COLOR[tone] }} />
+        <span className='text-[12.5px] font-semibold'>{name}</span>
+      </div>
+      <div className='mt-[7px] text-[15px] font-semibold leading-[1.4]' style={{ color: VALUE_COLOR[tone] }}>
+        {value}
+      </div>
+      {error ? (
+        <div className='mt-[5px] text-[11.5px] leading-[1.55]' style={{ color: 'var(--danger)' }}>{error}</div>
+      ) : null}
+      <div className='mt-[5px] text-[11.5px] leading-[1.55] muted'>{hint}</div>
+    </div>
+  )
+}
+
+function HealthPanel() {
+  const [snap, setSnap] = useState<HealthSnapshot>(IDLE_SNAPSHOT)
+  // 「一次只测一轮」的闸：按钮在 checking 时本来就禁用，这道闸主要挡「快速来回
+  // 切页」时 MutationObserver 连环触发的自动检测 —— 后到的直接让路，在途那轮的
+  // 结果照样落地
+  const busyRef = useRef(false)
+
+  const check = useCallback(async () => {
+    if (busyRef.current) return
+    busyRef.current = true
+    setSnap(prev => ({ ...prev, checking: true }))
+    // 四个读数互不依赖、失败互不拖累，并发打出去（探活函数自己不抛）。两个管理
+    // API 未登录会 401：probeGet 只看 HTTP 状态，401 的 body 是 null，版本回落
+    // 「—」、脚注省略 —— 登录态的缺失不该被画成「网关不健康」。
+    const [gateway, models, updateStatus, storage] = await Promise.all([
+      probeGet('/health'),
+      probeGet('/v1/models'),
+      probeGet('/api/update/status'),
+      probeGet('/api/storage'),
+    ])
+    const version = String(envelopeData(updateStatus.body)?.currentVersion || '').trim()
+    // /api/storage 的读数住在 data.database 小节里（账户数 / 累计请求数），形状
+    // 由 storage_api.rs 定；形状不对时 Number() 给 NaN，下面统一按「没读到」处理
+    const database = envelopeData(storage.body)?.database as Record<string, unknown> | undefined
+    const accounts = Number(database?.accounts)
+    const requests = Number(database?.requests)
+    setSnap({
+      checking: false,
+      gateway,
+      models,
+      modelCount: modelsArrayOf(models.body)?.length ?? 0,
+      version,
+      accounts: Number.isFinite(accounts) ? accounts : null,
+      requests: Number.isFinite(requests) ? requests : null,
+    })
+    busyRef.current = false
+  }, [])
+
+  // 进页面自动检测一轮：信号与理由见文件头「网关健康」一节。check 有 busyRef
+  // 挡重复，快速来回切页不会叠出多轮请求。
+  useEffect(() => {
+    const section = document.querySelector('.page[data-page="docs"]')
+    if (!section) return
+    if (section.classList.contains('active')) void check()
+    const observer = new MutationObserver(() => {
+      if (section.classList.contains('active')) void check()
+    })
+    observer.observe(section, { attributes: true, attributeFilter: ['class'] })
+    return () => observer.disconnect()
+  }, [check])
+
+  const gatewayValue = snap.gateway.ok === true
+    ? (snap.gateway.ms > 0 ? `运行中 · ${snap.gateway.ms} ms` : '运行中')
+    : snap.gateway.ok === false ? '不可达' : '—'
+  const modelsValue = snap.models.ok === true
+    ? `可用 · ${snap.modelCount} 个模型`
+    : snap.models.ok === false ? '不可用' : '—'
+
+  return (
+    <section className='panel ep-panel'>
+      <div className='panel-head'>
+        <h2>网关健康</h2>
+        <span className='tip-q' tabIndex={0} aria-label='网关健康面板说明' data-tip={HEALTH_TIP}></span>
+        <div className='head-actions'>
+          <Button variant='outline' size='sm' disabled={snap.checking} onClick={() => void check()}>
+            {snap.checking ? (<><Spinner className='size-3.5' />检测中…</>) : '重新检测'}
+          </Button>
+        </div>
+      </div>
+      <div className='ep-list'>
+        {/* 三张卡横排；窗口放不下时 flex-wrap 整卡落到下一行，不压扁读数 */}
+        <div className='flex flex-wrap gap-[10px] px-[16px] py-[14px]'>
+          <HealthCard
+            name='网关进程'
+            tone={snap.gateway.ok === true ? 'ok' : snap.gateway.ok === false ? 'bad' : 'idle'}
+            value={gatewayValue}
+            hint={GATEWAY_HINT}
+            error={probeError(snap.gateway)}
+          />
+          <HealthCard
+            name='模型清单'
+            tone={snap.models.ok === true ? 'ok' : snap.models.ok === false ? 'bad' : 'idle'}
+            value={modelsValue}
+            hint={MODELS_HINT}
+            error={probeError(snap.models)}
+          />
+          <HealthCard
+            name='引擎版本'
+            tone={snap.version ? 'info' : 'idle'}
+            value={snap.version || '—'}
+            hint={VERSION_HINT}
+            error=''
+          />
+        </div>
+      </div>
+      <div className='panel-foot'>
+        <span>
+          {'探活请求不带鉴权头、与页面同源；探活只看 HTTP 状态 —— '}
+          <code>{'{"status":"ok"}'}</code>
+          {' 或空模型清单同样算通过。'}
+        </span>
+        {snap.accounts !== null ? (
+          <span>{`账号池 ${snap.accounts} 个账号 · 累计请求 ${snap.requests ?? 0} 次`}</span>
+        ) : null}
+      </div>
+    </section>
+  )
+}
+
 /* ─── 页面 ─────────────────────────────────── */
 
 function DocsPage() {
@@ -286,7 +547,7 @@ function DocsPage() {
       <section className='panel ep-panel'>
       <div className='panel-head'>
         <h2>接口地址</h2>
-        <span className='tip-q' data-tip={PANEL_TIP}></span>
+        <span className='tip-q' tabIndex={0} aria-label='客户端快速接入说明' data-tip={PANEL_TIP}></span>
       </div>
       {/* 对话协议三种并列写出：客户端按自己支持的那种选一行填，三家共用同一套模型与账号池
           —— 换协议不用换配置 */}
@@ -320,6 +581,7 @@ function DocsPage() {
       </div>
     </section>
       <QuickStartPanel />
+      <HealthPanel />
     </>
   )
 }
