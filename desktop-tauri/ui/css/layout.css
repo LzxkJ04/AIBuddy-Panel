@@ -675,3 +675,15 @@ body.has-titlebar .shell {
   color: var(--sidebar-muted);
   font-family: var(--font-mono);
 }
+
+/* ── 侧栏分组手风琴 ── */
+.nav-group-toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  cursor: pointer; user-select: none;
+}
+.nav-group-toggle .nav-group-arrow {
+  font-size: 10px; color: var(--sidebar-muted);
+  transition: transform .2s ease;
+}
+.nav-group-toggle.expanded .nav-group-arrow { transform: rotate(180deg); }
+.nav-group-toggle:not(.expanded) + .nav-item { display: none !important; }

@@ -3884,18 +3884,34 @@ function ChannelCard({ channel, busy, onEdit, onDelete }: {
   )
 }
 
-/** 表单里的一行输入（按字段表出 Input / Textarea，说明逐字段来自 NOTIFY_TYPES） */
+/**
+ * 表单里的一行输入（按字段表渲染控件，说明逐字段来自 NOTIFY_TYPES）：
+ * multiline 出多行文本、number 出数字框、secret 出密码框（默认打码，可点「显示」
+ * 临时明文核对），其余为单行文本。
+ */
 function ChannelFieldRow({ draft, field, onChange }: {
   draft: NotifyChannel
-  field: { key: string; label: string; hint: string; placeholder?: string; multiline?: boolean; rows?: number }
+  field: {
+    key: string
+    label: string
+    hint: string
+    placeholder?: string
+    secret?: boolean
+    number?: boolean
+    multiline?: boolean
+    rows?: number
+  }
   onChange: (key: string, value: string) => void
 }) {
   const id = `notify-channel-${draft.id}-${field.key}`
   const value = draft.config[field.key] ?? ''
+  // 密钥框的打码状态：只切换遮罩，输入框里的真实值始终完整，保存原样落盘
+  const [revealed, setRevealed] = React.useState(false)
+  const inputType = field.number ? 'number' : field.secret && !revealed ? 'password' : 'text'
   return (
     <div className='retention-row'>
       <label htmlFor={id}>{field.label}</label>
-      <span className='prompt-input'>
+      <span className='prompt-input flex items-center gap-2'>
         {field.multiline ? (
           <Textarea
             id={id}
@@ -3907,13 +3923,19 @@ function ChannelFieldRow({ draft, field, onChange }: {
         ) : (
           <Input
             id={id}
-            type='text'
-            autoComplete='off'
+            type={inputType}
+            inputMode={field.number ? 'numeric' : undefined}
+            autoComplete={field.secret ? 'new-password' : 'off'}
             placeholder={field.placeholder}
             value={value}
             onChange={event => onChange(field.key, event.target.value)}
           />
         )}
+        {field.secret && !field.multiline ? (
+          <Button variant='outline' size='sm' onClick={() => setRevealed(v => !v)}>
+            {revealed ? '隐藏' : '显示'}
+          </Button>
+        ) : null}
       </span>
       <div className='hint'>{field.hint}</div>
     </div>

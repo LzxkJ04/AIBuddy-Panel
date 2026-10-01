@@ -78,32 +78,60 @@
 
       <!-- 图标由 icons.js + app.js 注入（内联 SVG，见 icons.js 顶部说明） -->
       <nav class="nav" id="nav">
-        <div class="nav-group-label">运行状态</div>
-        <button class="nav-item active" data-page="overview" data-icon="overview"><span class="ico"></span><span class="label">报表</span></button>
-        <button class="nav-item" data-page="accounts" data-icon="accounts"><span class="ico"></span><span class="label">账号</span></button>
+        <div class="nav-group-label nav-group-toggle" data-group="pool">账号池<span class="nav-group-arrow">▾</span></div>
+        <button class="nav-item active" data-page="overview" data-icon="overview" data-group="pool"><span class="ico"></span><span class="label">用量</span></button>
+        <button class="nav-item" data-page="accounts" data-icon="accounts" data-group="pool"><span class="ico"></span><span class="label">账号池</span></button>
 
-        <div class="nav-group-label">转发能力</div>
-        <button class="nav-item" data-page="gateway" data-icon="gateway"><span class="ico"></span><span class="label">模型管理</span></button>
+        <div class="nav-group-label nav-group-toggle" data-group="forward">模型与档位<span class="nav-group-arrow">▾</span></div>
+        <button class="nav-item" data-page="gateway" data-icon="gateway" data-group="forward"><span class="ico"></span><span class="label">模型与档位</span></button>
         <!-- 网络代理：出网出口的管理页（代理池 CRUD + 连通性测试 + Clash 出口引用）。
              挨着「模型管理」是因为它管的是同一个问题的另一半：模型管理决定
              「请求发往哪家上游」，这里决定「从哪条线路出去」。账号弹窗里的
              「出网代理」仍可用，但推荐在这里配好、账号按名字引用 ——
              改一次地址，所有引用的账号一起生效。 -->
-        <button class="nav-item" data-page="proxies" data-icon="proxies"><span class="ico"></span><span class="label">网络代理</span></button>
-        <button class="nav-item" data-page="keys" data-icon="key"><span class="ico"></span><span class="label">网关 Key</span></button>
+        <button class="nav-item" data-page="proxies" data-icon="proxies" data-group="forward"><span class="ico"></span><span class="label">网络代理</span></button>
+        <button class="nav-item" data-page="keys" data-icon="key" data-group="forward"><span class="ico"></span><span class="label">网关 Key</span></button>
         <!-- 文档：接口地址（Base URL / 三种对话协议 / 模型列表）与将来的使用说明。
              它原先在「网关 Key」页里，R8 按需求搬成独立一级菜单 —— 接口地址是
              「接客户端」这件事本身要查的东西，与「管理 Key」不是同一类操作，
              混在一页里用户要在两件事之间来回滚。图标用 logs（文档 + 文本行），
              语义上就是「文档」，不新画 SVG（见 icons.js）。 -->
-        <button class="nav-item" data-page="docs" data-icon="logs"><span class="ico"></span><span class="label">文档</span></button>
+        <button class="nav-item" data-page="docs" data-icon="logs" data-group="forward"><span class="ico"></span><span class="label">接入文档</span></button>
 
-        <div class="nav-group-label">诊断</div>
-        <button class="nav-item" data-page="requests" data-icon="requests"><span class="ico"></span><span class="label">请求日志</span><span class="count" id="nav-count-requests" style="display:none">0</span></button>
-        <button class="nav-item" data-page="logs" data-icon="logs"><span class="ico"></span><span class="label">日志</span><span class="count" id="nav-count-logs" style="display:none">0</span></button>
-        <button class="nav-item" data-page="tasks" data-icon="tasks"><span class="ico"></span><span class="label">定时任务</span></button>
-        <button class="nav-item" data-page="settings" data-icon="settings"><span class="ico"></span><span class="label">设置</span><span class="count" id="nav-count-update" style="display:none">新</span></button>
+        <div class="nav-group-label nav-group-toggle" data-group="ops">运维<span class="nav-group-arrow">▾</span></div>
+        <button class="nav-item" data-page="requests" data-icon="requests" data-group="ops"><span class="ico"></span><span class="label">运行日志</span><span class="count" id="nav-count-requests" style="display:none">0</span></button>
+        <button class="nav-item" data-page="logs" data-icon="logs" data-group="ops"><span class="ico"></span><span class="label">系统日志</span><span class="count" id="nav-count-logs" style="display:none">0</span></button>
+        <button class="nav-item" data-page="tasks" data-icon="tasks" data-group="ops"><span class="ico"></span><span class="label">任务中心</span></button>
+        <button class="nav-item" data-page="settings" data-icon="settings" data-group="ops"><span class="ico"></span><span class="label">配置</span><span class="count" id="nav-count-update" style="display:none">新</span></button>
       </nav>
+      <script>
+      // 侧栏分组折叠/展开（手风琴）
+      (function(){
+        document.querySelectorAll('.nav-group-toggle').forEach(function(toggle){
+          toggle.addEventListener('click', function(){
+            var group = toggle.getAttribute('data-group');
+            var items = document.querySelectorAll('.nav-item[data-group="' + group + '"]');
+            var isOpen = toggle.classList.contains('expanded');
+            toggle.classList.toggle('expanded', !isOpen);
+            items.forEach(function(item){
+              item.style.display = isOpen ? 'none' : '';
+            });
+            try { localStorage.setItem('nav-group-' + group, isOpen ? 'closed' : 'open'); } catch(e){}
+          });
+          // 恢复上次状态（默认展开）
+          var group = toggle.getAttribute('data-group');
+          try {
+            var state = localStorage.getItem('nav-group-' + group);
+            if (state === 'closed') {
+              toggle.classList.remove('expanded');
+              document.querySelectorAll('.nav-item[data-group="' + group + '"]').forEach(function(item){ item.style.display = 'none'; });
+            } else {
+              toggle.classList.add('expanded');
+            }
+          } catch(e){}
+        });
+      })();
+      </script>
 
       <div class="sidebar-foot">
         <!-- 网关状态：常驻显示，不必切到「网关」页也能确认服务是否在监听。
