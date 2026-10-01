@@ -254,8 +254,13 @@ pub fn shim_js() -> &'static str {
     loginActive = true;
     loginProvider = provider;
     emitLogin();
+    // 网页端的「内置窗口」：弹出一个**带尺寸的独立小窗**（520×720，无菜单/工具栏），
+    // 对齐桌面端内置窗口的悬浮窗形态 —— 不能用默认的 '_blank'（那会开成完整
+    // 浏览器标签页），也不能用 iframe（各家登录页普遍带 X-Frame-Options 禁嵌）。
+    // 名称 'a2a-login' 保证同一次登录的预开窗口与后续导航落在同一个小窗里。
+    var POPUP_FEATURES = 'width=520,height=720,menubar=no,toolbar=no,location=yes,status=no';
     var popup = null;
-    try { popup = window.open('about:blank', 'a2a-login'); } catch (e) { /* 拦截时走兜底 */ }
+    try { popup = window.open('about:blank', 'a2a-login', POPUP_FEATURES); } catch (e) { /* 拦截时走兜底 */ }
     try {
       var started = await startRequest;
       var authUrl = started && started.authUrl;
@@ -264,7 +269,7 @@ pub fn shim_js() -> &'static str {
         popup.location.href = authUrl;
       } else {
         var second = null;
-        try { second = window.open(authUrl, '_blank'); } catch (e) { /* 落到链接兜底 */ }
+        try { second = window.open(authUrl, 'a2a-login', POPUP_FEATURES); } catch (e) { /* 落到链接兜底 */ }
         if (!second) showLinkFallback(authUrl);
       }
       return await pollWait(started.state);
