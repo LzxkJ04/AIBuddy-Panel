@@ -41,6 +41,7 @@
 use std::time::Duration;
 
 use chrono::Timelike;
+use base64::Engine as _;
 use hmac::{Hmac, Mac};
 use serde_json::{json, Map, Value};
 use sha2::Sha256;
@@ -174,7 +175,8 @@ impl NotifyChannel {
 
 /// 当前全部渠道（按存储顺序）
 pub fn channels() -> Vec<NotifyChannel> {
-    let Some(Value::Array(items)) = config::current().raw().get(KEY_CHANNELS) else {
+    let snapshot = config::current();
+    let Some(Value::Array(items)) = snapshot.raw().get(KEY_CHANNELS) else {
         return Vec::new();
     };
     items.iter().filter_map(NotifyChannel::from_value).collect()

@@ -1102,7 +1102,7 @@ async fn attempt_queue(
                                     );
                                     crate::server::core::notify::notify_account_event(
                                         provider_id,
-                                        model,
+                                        &model,
                                         "account_offline",
                                         &message,
                                     );

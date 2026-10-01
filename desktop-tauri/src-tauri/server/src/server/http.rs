@@ -31,7 +31,7 @@ use axum::extract::Request;
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get, patch, post, put, delete};
+use axum::routing::{any, get, patch, post, put};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
