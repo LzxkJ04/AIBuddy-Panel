@@ -1,9 +1,10 @@
 /* ─────────────────────────────────────────────
    AIBuddy Panel · 偏好设置系统样式（vue-next-admin 风格）
-   抽屉 / 胶囊页签 / 主题三卡（SVG）/ 布局模式四卡（迷你示意图）/
+   抽屉（四页签）/ 胶囊页签 / 主题三卡（SVG）/ 布局模式四卡（迷你示意图）/
    色板圆点+名称 / 开关行 / 分段选择 / 页脚 / 顶栏图标钮 /
    Ctrl+K 搜索 / 进度条 / 欢迎横幅 / Toast / 水印 /
-   灰色·色弱滤镜 / 页面切换动画 / 局部深色侧栏顶栏 / 手机端适配
+   灰色·色弱滤镜 / 页面切换动画 / 局部深色侧栏顶栏 / 顶栏渐变 /
+   面包屑·Logo·分组标题显隐 / 菜单高亮条 / 版权页脚 / 锁屏遮罩 / 手机端适配
    颜色一律走 tokens.css 变量，深色主题自动成立。
    ───────────────────────────────────────────── */
 
@@ -351,6 +352,43 @@ html[data-pref-anim="slide"] .page.active { animation: prefPageSlide .3s cubic-b
   color-scheme: dark;
 }
 
+/* ── 面包屑开关（vue-next-admin isBreadcrumb）：关 = 隐藏顶栏面包屑 ── */
+:root[data-pref-crumb="off"] .topbar .crumb { display: none; }
+
+/* ── Logo 开关（isShowLogo）：关 = 隐藏侧栏品牌图形，品牌文字保留 ── */
+:root[data-pref-logo="off"] .sidebar .brand-logo { display: none; }
+
+/* ── 分组标题开关（isGroupLabel）：关 = 折叠态也显示分组标题 ──
+   （压过 shell.css 的 body.shell-collapsed 隐藏规则，:root 属性选择器特异性更高） */
+:root[data-pref-grouplabel="off"] body.shell-collapsed .sidebar .nav-group-label {
+  text-align: left;
+  padding-left: 8px; padding-right: 8px;
+  font-size: 10.5px;
+  max-width: 100%; overflow: hidden;
+  white-space: nowrap; text-overflow: ellipsis;
+}
+:root[data-pref-grouplabel="off"] body.shell-collapsed .sidebar .nav-group-label::after { content: none; }
+
+/* ── 顶栏渐变（isTopBarColorGradual）：主色 → 紫蓝，令牌混色，深浅主题都成立 ──
+   放在深色顶栏块之后：同特异性下后来者胜，渐变开启时顶栏文字统一走白系保证对比度 */
+:root[data-pref-topbar-grad="on"] .topbar {
+  background: linear-gradient(90deg, var(--primary) 0%, color-mix(in srgb, #6b6bff 70%, var(--primary)) 100%);
+  border-bottom-color: transparent;
+  --text: #fff;
+  --text-2: oklch(1 0 0 / 88%);
+  --text-3: oklch(1 0 0 / 70%);
+}
+
+/* ── 菜单高亮条（菜单高亮形态）：选中项左侧 3px 主色圆角短条 ──
+   .nav-item 本身 position:relative（layout.css），这里只补指示条 */
+:root[data-pref-navhl="on"] .sidebar .nav-item.active::before {
+  content: ''; position: absolute;
+  left: 4px; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 18px; border-radius: 2px;
+  background: var(--primary);
+  pointer-events: none;
+}
+
 /* ── 欢迎横幅（报表页顶部）── */
 .aibuddy-banner {
   display: flex; align-items: center; gap: 14px;
@@ -430,3 +468,74 @@ html[data-pref-anim="slide"] .page.active { animation: prefPageSlide .3s cubic-b
   line-height: 1 !important;
 }
 .pref-drawer .pref-palette-item .name { line-height: 1.2 !important; }
+
+/* ── 版权页脚（isFooter）：主内容区底部固定一行 ──
+   content-inner 是 flex 纵向容器，margin-top:auto 在内容不满一屏时也贴底 */
+.pref-footer {
+  margin-top: auto;
+  padding: 13px 0 16px;
+  border-top: 1px solid var(--hairline);
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--text-3);
+  letter-spacing: .2px;
+  user-select: none;
+}
+
+/* ── 抽屉里的锁屏输入（宽下入行右栏，全局 input 基础样式已够用，只定宽）── */
+.pref-row-ctl .pref-inp { width: 168px; }
+.pref-row-ctl .pref-inp.num { width: 92px; text-align: right; font-variant-numeric: tabular-nums; }
+.pref-lock-now { margin-top: 12px; width: 100%; height: 32px; }
+
+/* ── 锁屏遮罩（z-index 2000，压过抽屉 1001 / Toast 1300 / 进度条 1200）── */
+.pref-lock {
+  position: fixed; inset: 0; z-index: 2000;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 30px; padding: 24px;
+  background: oklch(0 0 0 / 52%);
+  backdrop-filter: blur(20px) saturate(1.15);
+  -webkit-backdrop-filter: blur(20px) saturate(1.15);
+  animation: prefFade .22s ease;
+  color: #fff;
+}
+.pref-lock-clock { text-align: center; text-shadow: 0 2px 18px oklch(0 0 0 / 35%); }
+.pref-lock-time {
+  font-size: 72px; font-weight: 700; line-height: 1;
+  letter-spacing: 3px; font-variant-numeric: tabular-nums;
+}
+.pref-lock-date { margin-top: 12px; font-size: 14.5px; opacity: .82; }
+.pref-lock-box {
+  width: min(320px, 88vw);
+  padding: 18px 18px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-3);
+  color: var(--text);
+}
+.pref-lock-hint { margin-bottom: 12px; font-size: 12.5px; color: var(--text-2); text-align: center; }
+.pref-lock-row { display: flex; gap: 8px; }
+.pref-lock-row input { flex: 1; min-width: 0; }
+.pref-lock-btn {
+  height: 30px; padding: 0 16px;
+  border: 1px solid var(--primary); border-radius: var(--r-sm);
+  background: var(--primary); color: #fff;
+  font-size: 12.5px; font-weight: 600; cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.pref-lock-btn:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+.pref-lock-btn.wide { width: 100%; }
+.pref-lock-err {
+  min-height: 18px; margin-top: 9px;
+  font-size: 11.5px; color: var(--danger); text-align: center;
+}
+.pref-lock.shake .pref-lock-box { animation: prefLockShake .3s ease; }
+@keyframes prefLockShake {
+  0%, 100% { transform: none; }
+  25% { transform: translateX(-7px); }
+  75% { transform: translateX(7px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pref-lock.shake .pref-lock-box { animation: none; }
+}

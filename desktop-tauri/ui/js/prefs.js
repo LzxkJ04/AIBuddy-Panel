@@ -774,6 +774,42 @@
           function (v) { prefs.watermark = v; save(prefs); apply(); }),
           '在页面最上层平铺品牌名与当前日期，适用于录屏与演示场景'));
       }
+      if (tabName === 'lock') {
+        body.appendChild(section('锁屏'));
+        body.appendChild(row('启用锁屏', toggle(function () { return prefs.lockScreen.enabled; },
+          function (v) { prefs.lockScreen.enabled = v; save(prefs); apply(); }),
+          '开启后按 Ctrl+L 立即锁屏；空闲达到下方分钟数也会自动锁屏'));
+        var pwIn = el('input', 'pref-inp pw');
+        pwIn.type = 'password';
+        pwIn.value = prefs.lockScreen.password;
+        pwIn.placeholder = '未设置';
+        pwIn.autocomplete = 'new-password';
+        pwIn.addEventListener('input', function () {
+          prefs.lockScreen.password = pwIn.value;
+          save(prefs); // 密码只落盘，不必触发全量 apply
+        });
+        body.appendChild(row('锁屏密码', pwIn,
+          '仅明文保存在本机 localStorage，用于本机解锁校验，不会上传；留空则锁屏后可直接解锁'));
+        var minIn = el('input', 'pref-inp num');
+        minIn.type = 'number';
+        minIn.min = '0'; minIn.max = '1440'; minIn.step = '1';
+        minIn.value = String(prefs.lockScreen.minutes);
+        minIn.addEventListener('input', function () {
+          var n = Math.floor(Number(minIn.value));
+          if (!isFinite(n) || n < 0) n = 0;
+          if (n > 1440) n = 1440;
+          prefs.lockScreen.minutes = n;
+          save(prefs);
+        });
+        minIn.addEventListener('change', function () { minIn.value = String(prefs.lockScreen.minutes); });
+        body.appendChild(row('自动锁屏（分钟）', minIn,
+          '鼠标 / 键盘空闲达到该分钟数自动锁屏；0 = 不自动锁屏'));
+        var lockBtn = el('button', 'pref-act primary pref-lock-now');
+        lockBtn.type = 'button';
+        lockBtn.textContent = '立即锁屏';
+        lockBtn.addEventListener('click', function () { lockNow(); });
+        body.appendChild(lockBtn);
+      }
     }
     renderTab('look');
 
@@ -796,7 +832,7 @@
       }).catch(function () { toast('读取剪贴板失败', 'err'); });
     });
     drawer.querySelector('#pref-reset').addEventListener('click', function () {
-      prefs = Object.assign({}, DEFAULTS);
+      prefs = sanitize(Object.assign({}, DEFAULTS)); // 走 sanitize，确保 lockScreen 等结构完整
       try { localStorage.removeItem(KEY); } catch (e) {}
       save(prefs); apply();
       var on = drawer.querySelector('.pref-tabs button.on');
@@ -853,6 +889,15 @@
     if (document.querySelector('.page[data-page="overview"].active')) ensureBanner();
   }, 1200);
   setTimeout(function () { clearInterval(bannerTimer); }, 30000);
+
+  /* ── 最小外部钩子：主会话接线 / 自动化冒烟测试用（只读偏好 + 锁屏控制）── */
+  window.__aibuddyPrefs = {
+    get: function () { return JSON.parse(JSON.stringify(prefs)); },
+    lock: function () { lockNow(); },
+    tryUnlock: tryUnlock,
+    unlock: unlock,
+    isLocked: isLocked
+  };
 
   /* ── 启动 ─────────────────────────────────── */
   function boot() {
