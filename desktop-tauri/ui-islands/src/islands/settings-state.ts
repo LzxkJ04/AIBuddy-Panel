@@ -1,5 +1,5 @@
 /**
- * Agent2API · 设置页的**状态与流程层**（快照 store / 取数 / 写入 / 对外契约）。
+ * AIBuddy Panel · 设置页的**状态与流程层**（快照 store / 取数 / 写入 / 对外契约）。
  *
  * 从 settings-page.tsx 拆出来：视图层装完「五个分类 + 十来个面板 + 一个确认框」已超过项目
  * 约定的单文件体量，而这一层的边界很清楚 —— 没有 JSX。依赖单向（视图层 import 它，
@@ -1471,27 +1471,32 @@ export async function loadNotify(): Promise<void> {
 }
 
 /**
- * 渠道清单的**全量保存**（PUT /api/notify/channels）：后端契约是整单覆盖，没有
- * 增 / 删 / 改的单项端点，所以添加、编辑、删除、卡片上的启停最终都汇到这一个流程 ——
- * 调用方把「改完的整份清单」递进来，这里只负责乐观写入 → PUT → 按响应重画 → 失败回滚。
- * 返回 true = 保存成功（视图据此收掉添加 / 编辑表单）。
+ * 渠道保存的公共骨架：乐观写入 → 打端点 → 按响应重铺 → 失败回滚。
+ *
+ * 后端是**逐项端点**（POST /api/notify/channels 新增、PUT /api/notify/channels/{id}
+ * 部分更新、DELETE /api/notify/channels/{id} 删除），没有整单覆盖 —— v2.13.0 之前
+ * 这层曾按虚构的「PUT 全量保存」契约实现，保存恒 404。四个动作（增 / 改 / 启停 / 删）
+ * 都汇到这里，调用方只递乐观清单与真实请求。
  */
-export async function saveNotifyChannels(next: NotifyChannel[], okText: string): Promise<boolean> {
-  if (busyScope) return false
+async function mutateNotifyChannel(
+  previous: NotifyChannel[],
+  optimistic: NotifyChannel[],
+  request: () => Promise<unknown>,
+  okText: string,
+): Promise<boolean> {
   beginBusy('notify')
-  const previous = snapshot.notify.channels
   // 乐观写入：界面立即反映这次改动（视图按 busy === 'notify' 禁用整块）
-  patchNotify({ channels: next, channelsStatus: 'ready' })
+  patchNotify({ channels: optimistic, channelsStatus: 'ready' })
   try {
-    const saved = await notifyApi('PUT', '/api/notify/channels', { channels: next })
-    // 响应带清单就以后端确认的为准（排序、补字段的最终口径在那边）；
-    // 只回 {success:true} 的形状就保留乐观值 —— 不能因为响应没带清单就判「不可用」
-    const normalized = normalizeNotifyChannels(saved)
+    // 响应带清单就以后端确认的为准（新增时 id 由后端生成）；响应没带清单就保留乐观值
+    // —— 不能因为响应缺清单就判「不可用」
+    const normalized = normalizeNotifyChannels(await request())
     if (normalized) patchNotify({ channels: normalized })
+    else patchNotify({ channels: optimistic })
     toast(okText)
     return true
   } catch (error) {
-    patchNotify({ channels: previous, channelsStatus: previous ? 'ready' : 'unavailable' })
+    patchNotify({ channels: previous, channelsStatus: 'ready' })
     toast(`保存失败：${errorMessage(error)}`, 'err')
     return false
   } finally {
@@ -1499,24 +1504,71 @@ export async function saveNotifyChannels(next: NotifyChannel[], okText: string):
   }
 }
 
-/** 卡片上的启用开关：等价于一次只改 enabled 的全量保存（确认？不需要 —— 启停随时可拨回） */
+/** 新增渠道（POST /api/notify/channels）：id 由后端生成，本地草稿的 id 不上传 */
+export async function createNotifyChannel(channel: NotifyChannel, okText: string): Promise<boolean> {
+  if (busyScope) return false
+  const previous = snapshot.notify.channels
+  if (!previous) return false
+  return mutateNotifyChannel(
+    previous,
+    [...previous, channel],
+    () =>
+      notifyApi('POST', '/api/notify/channels', {
+        type: channel.type,
+        name: channel.name,
+        enabled: channel.enabled,
+        config: channel.config,
+      }),
+    okText,
+  )
+}
+
+/** 编辑渠道（PUT /api/notify/channels/{id}） */
+export async function updateNotifyChannel(channel: NotifyChannel, okText: string): Promise<boolean> {
+  if (busyScope) return false
+  const previous = snapshot.notify.channels
+  if (!previous || !previous.some(item => item.id === channel.id)) return false
+  return mutateNotifyChannel(
+    previous,
+    previous.map(item => (item.id === channel.id ? channel : item)),
+    () =>
+      notifyApi('PUT', `/api/notify/channels/${encodeURIComponent(channel.id)}`, {
+        type: channel.type,
+        name: channel.name,
+        enabled: channel.enabled,
+        config: channel.config,
+      }),
+    okText,
+  )
+}
+
+/** 卡片上的启用开关：只发 enabled 一项（启停随时可拨回，不需要确认） */
 export async function toggleNotifyChannel(id: string, enabled: boolean): Promise<void> {
+  if (busyScope) return
   const list = snapshot.notify.channels
   if (!list) return
   const channel = list.find(item => item.id === id)
   if (!channel || channel.enabled === enabled) return
-  await saveNotifyChannels(
+  await mutateNotifyChannel(
+    list,
     list.map(item => (item.id === id ? { ...item, enabled } : item)),
+    () => notifyApi('PUT', `/api/notify/channels/${encodeURIComponent(id)}`, { enabled }),
     enabled ? `✅ 渠道「${channel.name}」已启用` : `渠道「${channel.name}」已停用`,
   )
 }
 
-/** 删除渠道（确认框在视图层做完才进来）：从清单里剔除后全量保存 */
+/** 删除渠道（确认框在视图层做完才进来）：DELETE /api/notify/channels/{id} */
 export async function removeNotifyChannel(id: string): Promise<void> {
+  if (busyScope) return
   const list = snapshot.notify.channels
   if (!list || !list.some(item => item.id === id)) return
   const name = list.find(item => item.id === id)?.name || id
-  await saveNotifyChannels(list.filter(item => item.id !== id), `已删除渠道「${name}」`)
+  await mutateNotifyChannel(
+    list,
+    list.filter(item => item.id !== id),
+    () => notifyApi('DELETE', `/api/notify/channels/${encodeURIComponent(id)}`),
+    `已删除渠道「${name}」`,
+  )
 }
 
 /**

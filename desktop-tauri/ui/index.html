@@ -81,6 +81,8 @@
         <div class="nav-group-label nav-group-toggle" data-group="pool">账号池<span class="nav-group-arrow">▾</span></div>
         <button class="nav-item active" data-page="overview" data-icon="overview" data-group="pool"><span class="ico"></span><span class="label">用量</span></button>
         <button class="nav-item" data-page="accounts" data-icon="accounts" data-group="pool"><span class="ico"></span><span class="label">账号池</span></button>
+        <!-- 积分构成：逐账号积分包明细 + 到期分布（数据 = 积分查询的 resources，见 credits-page 岛） -->
+        <button class="nav-item" data-page="credits" data-icon="packages" data-group="pool"><span class="ico"></span><span class="label">积分构成</span></button>
 
         <div class="nav-group-label nav-group-toggle" data-group="forward">模型与档位<span class="nav-group-arrow">▾</span></div>
         <button class="nav-item" data-page="gateway" data-icon="gateway" data-group="forward"><span class="ico"></span><span class="label">模型与档位</span></button>
@@ -185,6 +187,12 @@
              表骨架（colgroup + thead 的 th[data-col]）由岛渲染，顺序与原先写死的完全一致，
              列显隐 / 顺序仍由 wbColSettings.syncStaticHead 就地重排。 -->
         <section class="page" data-page="accounts"></section>
+
+        <!-- ─── 积分构成（对照 workbuddy2api-panel 的同名页：到期分布 / 账号对比 / 逐包明细）───
+             整页由 React 岛渲染（ui-islands/src/islands/credits-page.tsx）。数据 = 积分查询
+             （GET /api/accounts/usage/snapshot 取最近一次定时结果，秒开；「查询积分」按钮
+             才真正打上游）。岛直接挂在这个 section 上、不套宿主 div。 -->
+        <section class="page" data-page="credits"></section>
 
         <!-- ─── 模型管理（内部标识仍是 gateway：localStorage 记忆与 CSS 选择器都依赖它）───
              整页由 React 岛渲染（desktop-tauri/ui-islands/src/islands/models-page.tsx，

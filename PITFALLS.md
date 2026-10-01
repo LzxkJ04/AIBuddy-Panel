@@ -52,3 +52,12 @@
 - **顶栏 `#topbar-status` 会被整体重写**：app.js 的 `renderTopbarStatus()` 每次刷新都整段替换该容器的内容，直接塞进去的自绘按钮必然被冲掉。自绘按钮必须放独立容器、插在它旁边（prefs.js 顶栏快捷组的做法），并挂 MutationObserver 监听容器变化、被重写后自动重挂（自愈）。
 - **http 非安全源没有 crypto.subtle**：ALTCHA 人机验证靠 `crypto.subtle` 做 SHA-256 解题，非 secure context 下该 API 不存在，验证框会永远转圈、登录卡死。本地预览必须走 `http://localhost`（localhost 属 secure context）或 https；生产环境 https 不受影响。
 - **岛按文件名字典序执行**：跨岛「先渲染 DOM、后立刻写入」的操作必须 `flushSync` 同步提交，否则前面的岛还没落 DOM、后面的写入扑空（docs-page → port-panel 即此坑，详见上面「React 岛时序」一节）。
+
+## 2026-10-02 新增（v2.13.0 会话）
+
+- **本地工作区与 VM a2a-src 是两份源码，本地可能是旧版**：改 icons.js/app.js/index.html 这类两处都有的文件前先 diff（本次把本地旧版 icons.js 盖到 VM，全站图标消失一小时）；旧版本可从旧镜像里挖回（docker create + docker cp）。
+- **页面岛 flushSync 首渲染 + 模块尾声明 = TDZ**：岛在模块求值期 mount，flushSync 同步跑 useEffect——effect 里写的模块级 let 必须声明在 mount() 之前；诊断用 createRoot(el,{onUncaughtError})。
+- **CSS 级联顺序**：prefs.css 在 layout.css **之前**加载，同特异级的 `.shell` 覆盖写 prefs.css 会被压掉；抽屉态单列这类外壳覆盖要写进 layout.css/mobile.css。`.shell` 行高必须 `grid-template-rows: minmax(0, 1fr)` + `.sidebar { min-height: 0 }`，否则侧栏内容一多就不滚动。
+- **防虚构后端契约**：前端对接前先在 http.rs 确认路由存在（通知渠道曾按虚构的 PUT 整单覆盖实现，恒 404）；清单类配置两端用脚本机器比对（NOTIFY_TYPES vs KNOWN_KINDS 曾差 19 条）。
+- **本地 Rust 编译两坑**：U+2011 目录名会让链接器输出路径非法（Invalid argument），CARGO_TARGET_DIR 挪纯 ASCII 路径也没用（工作区路径仍进编译），本地只做 node 级检查，Rust 全走 VM Docker；无 MSVC 用 stable-gnu 工具链 + cargo-zigbuild。
+- **远程绑定跨站鉴权**：CORS 通配 `*` 带不了 Cookie，跨面板同步必须用 x-api-key（远程需建 API Key）；浏览器 https 面板连 http 远程会被拦。

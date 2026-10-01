@@ -102,6 +102,7 @@ pub const KNOWN_KINDS: &[&str] = &[
     "alerta",
     "alertnow",
     "amootsms",
+    "bale",
     "bearsms",
     "bitrix24",
     "brevo",
@@ -694,6 +695,30 @@ async fn send_telegram(config: &Value, title: &str, body: &str) -> Result<(), St
     send(
         http_client()
             .post(format!("https://api.telegram.org/bot{token}/sendMessage"))
+            .json(&payload),
+    )
+    .await
+}
+
+/// **bale** —— Bale Bot API（bale.ai；对照 Uptime-Kuma bale.js 逐字段移植：
+/// 端点 `https://tapi.bale.ai/bot{token}/sendMessage`，请求体只有
+/// `chat_id` / `text` 两键 —— Telegram 的扩展字段这里不发）。
+/// config：`baleBotToken`（必填）、`baleChatID`（必填，字符串或数字都收）。
+async fn send_bale(config: &Value, title: &str, body: &str) -> Result<(), String> {
+    let token = require_field(config, &["baleBotToken"], "bale", "baleBotToken")?;
+    let chat_id = config
+        .get("baleChatID")
+        .cloned()
+        .filter(|value| !value.is_null())
+        .filter(|value| value.as_str().map(|text| !text.trim().is_empty()).unwrap_or(true))
+        .ok_or_else(|| "bale 渠道缺少必填配置: baleChatID".to_string())?;
+    let payload = json!({
+        "chat_id": chat_id,
+        "text": message_text(title, body),
+    });
+    send(
+        http_client()
+            .post(format!("https://tapi.bale.ai/bot{token}/sendMessage"))
             .json(&payload),
     )
     .await
@@ -2292,11 +2317,13 @@ async fn send_ooredoo(config: &Value, title: &str, body: &str) -> Result<(), Str
     }
     let access_key_encoded = base64::engine::general_purpose::STANDARD.encode(access_key.as_bytes());
     for batch in recipients.chunks(20) {
+        // join 出的串要活到 .form(&form) 借用结束：临时值不能留在数组字面量里
+        let batch_recipients = batch.join(" ");
         let form = [
             ("username", username.as_str()),
             ("access_key", access_key_encoded.as_str()),
             ("message", message.as_str()),
-            ("batch", batch.join(" ").as_str()),
+            ("batch", batch_recipients.as_str()),
         ];
         let text = send_and_read(
             http_client()
@@ -3687,6 +3714,7 @@ async fn send_channel(channel: &NotifyChannel, title: &str, body: &str) -> Resul
         "alerta" => send_alerta(config, title, body).await,
         "alertnow" => send_alertnow(config, title, body).await,
         "amootsms" => send_amootsms(config, title, body).await,
+        "bale" => send_bale(config, title, body).await,
         "bearsms" => send_bearsms(config, title, body).await,
         "bitrix24" => send_bitrix24(config, title, body).await,
         "brevo" => send_brevo(config, title, body).await,

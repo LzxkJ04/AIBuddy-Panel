@@ -1,5 +1,5 @@
 /**
- * Agent2API · 设置页的**模型层**（桥类型 / 字段表 / 纯函数 / 页面文案）。
+ * AIBuddy Panel · 设置页的**模型层**（桥类型 / 字段表 / 纯函数 / 页面文案）。
  *
  * 从 settings-page.tsx 拆出来：那一份「五个分类 + 十来个面板 + 一个确认框」的视图层装完
  * 已超过项目约定的单文件体量，而这一层的边界很清楚 —— 没有 JSX、没有状态。依赖单向
@@ -239,13 +239,15 @@ export async function openExternal(url: string): Promise<void> {
  * 「通知中心」（notify）是**后端配置类**分类（通知渠道与告警事件路由都存在网关配置里，
  * 与「通知与页签」那栏的本机偏好不是一回事），所以插在「数据」之后、「偏好与外观」之前
  * —— 任务要求它排在「通知与页签」之前，而它管的又是后端的事，紧跟后端类的「数据」
- * 最顺；图标取 'bell'（icons.js 的设置页分类组目前还没有这个键，视图层有一枚
- * 同源描边兜底，见 settings-page 的 categoryIconHtml）。
+ * 最顺；图标取 'bell'（icons.js 已补这枚描边铃铛；settings-page 的 categoryIconHtml
+ * 里还留了一枚同源兜底，两处几何一致）。
  */
 export const CATEGORIES = [
   { id: 'general', label: '通用', icon: 'sliders' },
   { id: 'display', label: '显示', icon: 'display' },
-  { id: 'brand', label: '品牌', icon: 'brand' },
+  // 品牌分类用线性调色盘：渐变 logo（'brand'）只留给侧栏 / 登录页的品牌位，
+  // 分类图标全站统一描边风格（用户要求：图标一律线性）
+  { id: 'brand', label: '品牌', icon: 'palette' },
   { id: 'gateway', label: '网关', icon: 'traffic' },
   { id: 'retry', label: '重试', icon: 'refresh' },
   { id: 'timeout', label: '超时', icon: 'timer' },
@@ -521,7 +523,7 @@ export type NotifyAlerts = {
  * 这里只会如实报错，用户重新登录后一切恢复。
  */
 export async function notifyApi<T = unknown>(
-  method: 'GET' | 'PUT' | 'POST',
+  method: 'GET' | 'PUT' | 'POST' | 'DELETE',
   path: string,
   body?: unknown,
 ): Promise<T> {
@@ -592,8 +594,10 @@ export type NotifyTypeSpec = {
  * 事件与值班 → 邮件 → 短信语音 → 其它集成」分组追加 Uptime-Kuma 的其余类型。
  *
  * 新类型的 type 值 = refs/uptime-kuma/server/notification-providers/ 的文件名去掉
- * .js 后转小写（与后端代理同一份命名规则），config 键名与各 provider 的
- * send(notification, …) 逐字一致 —— 后端按这份表取值，改一处必须两处同步。
+ * .js、**再去掉连字符**后转小写（与后端 notify.rs 的 KNOWN_KINDS 同一条命名规则
+ * —— v2.13.0 之前两处各写各的，14 个渠道界面选了就 400、4 个后端根本没有，
+ * 已按后端口径统一并机器比对零差异；新增渠道必须两处同步 + 跑一遍比对），
+ * config 键名与各 provider 的 send(notification, …) 逐字一致。
  *
  * 字段渲染口径（settings-page 的 ChannelFieldRow）：secret 出密码框（可临时明文）、
  * number 出数字框、multiline 出多行文本、其余为单行文本；源码里的下拉与复选框
@@ -1003,7 +1007,7 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
     ],
   },
   {
-    type: 'rocket-chat',
+    type: 'rocketchat',
     label: 'Rocket.Chat',
     desc: 'Rocket.Chat 频道 Incoming Webhook。',
     fields: [
@@ -1079,7 +1083,7 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
     ],
   },
   {
-    type: 'google-chat',
+    type: 'googlechat',
     label: 'Google Chat',
     desc: 'Google Chat 群聊 Webhook：告警作为卡片消息发进指定聊天空间。',
     fields: [
@@ -1150,7 +1154,7 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
     ],
   },
   {
-    type: 'zoho-cliq',
+    type: 'zohocliq',
     label: 'Zoho Cliq',
     desc: 'Zoho Cliq 频道 Incoming Webhook。',
     fields: [
@@ -1719,7 +1723,7 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
     ],
   },
   {
-    type: 'call-me-bot',
+    type: 'callmebot',
     label: 'CallMeBot',
     desc: 'CallMeBot 免费个人推送：向 WhatsApp / Telegram / 短信 / 电话发一条提醒。',
     fields: [
@@ -1727,38 +1731,6 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
         key: 'callMeBotEndpoint',
         label: 'Endpoint',
         hint: '按 CallMeBot（callmebot.com）各渠道的指引为自己的账号生成的完整端点 URL（已含密钥参数），整段填入。注意该服务有速率限制（大约每条消息间隔需数秒以上）。',
-        required: true,
-      },
-    ],
-  },
-  {
-    type: 'nostr',
-    label: 'Nostr',
-    desc: 'Nostr 去中心化社交协议推送：把告警作为事件发布到 relay。',
-    fields: [
-      {
-        key: 'relays',
-        label: 'Relay 地址',
-        hint: '要发布到的 Nostr relay 服务地址，每行一个（如 wss://relay.damus.io）。',
-        placeholder: 'wss://127.0.0.1:7777/',
-        multiline: true,
-        rows: 3,
-        required: true,
-      },
-      {
-        key: 'sender',
-        label: '发送者私钥（nsec）',
-        hint: '用于签名发布事件的发送者私钥（nsec 开头）。建议使用专用密钥，不要填个人主号。',
-        secret: true,
-        required: true,
-      },
-      {
-        key: 'recipients',
-        label: '接收者公钥（npub）',
-        hint: '接收告警的公钥（npub 开头），每行一个。',
-        placeholder: 'npub123…',
-        multiline: true,
-        rows: 3,
         required: true,
       },
     ],
@@ -1873,7 +1845,7 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
     ],
   },
   {
-    type: 'techulus-push',
+    type: 'techuluspush',
     label: 'Push by Techulus',
     desc: 'Push by Techulus（iOS / Android 推送 App）。',
     fields: [
@@ -2151,7 +2123,7 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
     ],
   },
   {
-    type: 'grafana-oncall',
+    type: 'grafanaoncall',
     label: 'Grafana OnCall',
     desc: 'Grafana OnCall（值班与升级告警）事件上报。',
     fields: [
@@ -2164,7 +2136,7 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
     ],
   },
   {
-    type: 'heii-oncall',
+    type: 'heiioncall',
     label: 'Heii On-Call',
     desc: 'Heii On-Call（值班告警服务）触发器调用。',
     fields: [
@@ -2185,7 +2157,7 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
     ],
   },
   {
-    type: 'home-assistant',
+    type: 'homeassistant',
     label: 'Home Assistant',
     desc: 'Home Assistant（智能家居平台）通知触发：调用指定的 notify 通知动作。',
     fields: [
@@ -2250,7 +2222,7 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
     ],
   },
   {
-    type: 'jira-service-management',
+    type: 'jirasm',
     label: 'Jira Service Management',
     desc: 'Jira Service Management（Atlassian，原 Opsgenie 同族）告警事件上报。',
     fields: [
@@ -2601,7 +2573,7 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
     ],
   },
   {
-    type: 'send-grid',
+    type: 'sendgrid',
     label: 'SendGrid',
     desc: 'SendGrid（Twilio 旗下邮件服务）邮件发送。',
     fields: [
@@ -2638,140 +2610,6 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
         key: 'sendgridSubject',
         label: '主题（选填）',
         hint: '覆盖邮件主题，留空用默认主题。',
-      },
-    ],
-  },
-  {
-    type: 'smtp',
-    label: 'SMTP 邮件',
-    desc: '通用 SMTP 邮件发送：任何邮箱服务 / 自建邮件服务器都能用。',
-    fields: [
-      {
-        key: 'smtpHost',
-        label: '主机名',
-        hint: 'SMTP 服务器的主机名；打算用本机邮件投递代理（local MTA）时填 localhost。',
-        placeholder: 'smtp.example.com',
-        required: true,
-      },
-      {
-        key: 'smtpPort',
-        label: '端口',
-        hint: 'SMTP 端口：常用 25（明文）、465（隐式 TLS）、587（STARTTLS）。',
-        placeholder: '587',
-        number: true,
-        required: true,
-      },
-      {
-        key: 'smtpSecure',
-        label: '加密方式',
-        hint: 'true = 隐式 TLS（配 465 端口）；留空或 false = 先明文连接再按需升级 STARTTLS（配 587）。',
-      },
-      {
-        key: 'smtpIgnoreTLSError',
-        label: '忽略 TLS 错误',
-        hint: '服务器用自签证书时开启；会降低安全性，慎用。填 true 开启；留空或填 false 关闭。',
-      },
-      {
-        key: 'smtpIgnoreSTARTTLS',
-        label: '禁用 STARTTLS',
-        hint: '仅在不加密连接且服务器不支持 STARTTLS 时开启（连接将是明文的）。填 true 开启；留空或填 false 关闭。',
-      },
-      {
-        key: 'smtpUsername',
-        label: '用户名（选填）',
-        hint: 'SMTP 登录用户名；与密码同时留空则不进行认证。',
-      },
-      {
-        key: 'smtpPassword',
-        label: '密码 / 授权码',
-        hint: 'SMTP 登录密码；邮箱服务商通常是「授权码」而不是网页登录密码（如 QQ / 163 需要在邮箱设置里开启 SMTP 并生成授权码）。',
-        secret: true,
-      },
-      {
-        key: 'smtpFrom',
-        label: '发件邮箱',
-        hint: 'From 地址（有的服务要求与登录账号一致）。',
-        placeholder: 'alert@example.com',
-        required: true,
-      },
-      {
-        key: 'smtpTo',
-        label: '收件邮箱',
-        hint: '接收告警的地址，多个用逗号分隔（如 example2@kuma.pet, example3@kuma.pet）。',
-        required: true,
-      },
-      {
-        key: 'smtpCC',
-        label: '抄送（选填）',
-        hint: '抄送地址，多个用逗号分隔。',
-      },
-      {
-        key: 'smtpBCC',
-        label: '密送（选填）',
-        hint: '密送地址，多个用逗号分隔。',
-      },
-      {
-        key: 'customSubject',
-        label: '自定义主题（选填）',
-        hint: '覆盖邮件主题（LiquidJS 模板语法），留空用默认。',
-        multiline: true,
-        rows: 2,
-      },
-      {
-        key: 'customBody',
-        label: '自定义正文（选填）',
-        hint: '覆盖邮件正文（LiquidJS 模板语法），留空用默认。',
-        multiline: true,
-        rows: 4,
-      },
-      {
-        key: 'htmlBody',
-        label: '正文按 HTML 发送',
-        hint: '开启后自定义正文按 HTML 渲染（默认纯文本）。填 true 开启；留空或填 false 关闭。',
-      },
-      {
-        key: 'smtpAdditionalHeaders',
-        label: '附加邮件头（JSON，选填）',
-        hint: '随邮件附加的 SMTP 头，写成一个 JSON 对象，如 {"X-Custom":"value"}。',
-        multiline: true,
-        rows: 3,
-      },
-      {
-        key: 'smtpDkimDomain',
-        label: 'DKIM 域名（选填）',
-        hint: '启用 DKIM 签名时填邮件域名，如 example.com。',
-        placeholder: 'example.com',
-      },
-      {
-        key: 'smtpDkimKeySelector',
-        label: 'DKIM Key Selector（选填）',
-        hint: 'DKIM 选择器（DNS 里 <selector>._domainkey.<域名> 的前缀），如 2017。',
-        placeholder: '2017',
-      },
-      {
-        key: 'smtpDkimPrivateKey',
-        label: 'DKIM 私钥（选填）',
-        hint: 'DKIM 签名用的 PEM 私钥（-----BEGIN PRIVATE KEY----- 开头，整段粘贴）。',
-        multiline: true,
-        rows: 4,
-      },
-      {
-        key: 'smtpDkimHashAlgo',
-        label: 'DKIM 哈希算法（选填）',
-        hint: '签名哈希算法，一般用 sha256。',
-        placeholder: 'sha256',
-      },
-      {
-        key: 'smtpDkimheaderFieldNames',
-        label: 'DKIM 签名头（选填）',
-        hint: '参与签名的邮件头，冒号分隔；留空用 nodemailer 默认。',
-        placeholder: 'message-id:date:from:to',
-      },
-      {
-        key: 'smtpDkimskipFields',
-        label: 'DKIM 跳过的头（选填）',
-        hint: '不参与签名的邮件头，冒号分隔。',
-        placeholder: 'message-id:date',
       },
     ],
   },
@@ -2862,50 +2700,6 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
         label: '收件号码',
         hint: '收件人手机号，E.164 国际格式（如 +46701234567）。',
         required: true,
-      },
-    ],
-  },
-  {
-    type: 'aliyun-sms',
-    label: '阿里云短信',
-    desc: '阿里云短信服务（国内 / 国际短信模板短信）。',
-    fields: [
-      {
-        key: 'accessKeyId',
-        label: 'AccessKey ID',
-        hint: '阿里云 RAM 用户的 AccessKey ID（建议为短信功能单独建一个最小权限的 RAM 用户）。',
-        secret: true,
-        required: true,
-      },
-      {
-        key: 'secretAccessKey',
-        label: 'AccessKey Secret',
-        hint: '与 AccessKey ID 成对的访问密钥。',
-        secret: true,
-        required: true,
-      },
-      {
-        key: 'phonenumber',
-        label: '收件手机号',
-        hint: '接收短信的手机号。',
-        required: true,
-      },
-      {
-        key: 'signName',
-        label: '短信签名',
-        hint: '已审核通过的短信签名名称（显示在短信开头的【签名】）。',
-        required: true,
-      },
-      {
-        key: 'templateCode',
-        label: '模板代码',
-        hint: '已审核通过的模板 CODE。模板必须包含 name / time / status（以及可选的 msg）变量：{"name":"${name}","time":"${time}","status":"${status}"}。',
-        required: true,
-      },
-      {
-        key: 'optionalParameters',
-        label: '启用可选变量 msg',
-        hint: '开启后把告警详情作为可选变量 msg 传入；运营商限制下启用可选变量可能导致发送失败。填 true 开启；留空或填 false 关闭。',
       },
     ],
   },
@@ -3115,7 +2909,7 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
     ],
   },
   {
-    type: 'gtx-messaging',
+    type: 'gtxmessaging',
     label: 'GTX Messaging',
     desc: 'GTX Messaging（短信 API）短信发送。',
     fields: [
@@ -3385,7 +3179,7 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
     ],
   },
   {
-    type: 'sms-gateway',
+    type: 'smsgateway',
     label: 'SMS Gateway',
     desc: 'Android SMS Gateway App（用安卓手机当短信网关，自托管）。',
     fields: [
@@ -3413,7 +3207,7 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
     ],
   },
   {
-    type: 'sms-planet',
+    type: 'smsplanet',
     label: 'SMSPlanet',
     desc: 'SMSPlanet（波兰短信服务）短信发送。',
     fields: [
@@ -3772,24 +3566,6 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
 
   // 其它集成
   {
-    type: 'apprise',
-    label: 'Apprise',
-    desc: 'Apprise（命令行多渠道通知分发器）：一个入口转发到它支持的上百种服务。',
-    fields: [
-      {
-        key: 'appriseURL',
-        label: 'Apprise URL',
-        hint: '传给 apprise 命令行的目标 URL（可用逗号分隔多个），写法见 Apprise 文档（github.com/caronc/apprise），如 tgram://bottoken/ChatID、mailto://user:pass@gmail.com。要求网关所在机器已安装 apprise CLI。',
-        required: true,
-      },
-      {
-        key: 'title',
-        label: '标题（选填）',
-        hint: '附加给 Apprise 消息的标题（部分服务支持标题字段）。',
-      },
-    ],
-  },
-  {
     type: 'bitrix24',
     label: 'Bitrix24',
     desc: 'Bitrix24（CRM 与协作平台）站内通知发送。',
@@ -3830,7 +3606,7 @@ export const NOTIFY_TYPES: NotifyTypeSpec[] = [
     ],
   },
   {
-    type: 'google-sheets',
+    type: 'googlesheets',
     label: 'Google Sheets',
     desc: 'Google Sheets 行写入：通过 Apps Script Web 应用把告警记进表格。',
     fields: [
@@ -4313,7 +4089,7 @@ export const NOTES = {
   shellPane: '页签与通知都是外壳（浏览器内）功能：页签清单（aibuddy-tags）、通知已读水位（aibuddy-notify-read）、内容区全屏（aibuddy-content-max）都保存在本机 localStorage，不随账号走。通知中心的 60 秒轮询间隔是固定值，页面不可见时自动暂停、回前台立即补拉。',
   shellResetUnread: '清除通知中心的已读水位（aibuddy-notify-read）并立即重算：已亮着的红点随之清零，水位在重算时按当前最新事件重建 —— 之后的 error / warn 告警才会计未读。适合「红点想清零、从现在重新计数」的场景。',
   /* ── 通知中心（本次新增）── */
-  notifyChannels: '渠道清单整体保存在网关配置里：每次添加 / 编辑 / 删除 / 启停都会把全部渠道一次性保存（PUT /api/notify/channels），请求进行中整块禁用。删除需要确认，删除后不可恢复 —— 好在配置不复杂，重新添加一张同样的渠道即可。',
+  notifyChannels: '渠道逐条保存在网关配置里：添加走 POST /api/notify/channels，修改与启停走 PUT /api/notify/channels/{id}，删除走 DELETE（逐项生效，没有整单覆盖）。请求进行中整块禁用。删除需要确认，删除后不可恢复 —— 好在配置不复杂，重新添加一张同样的渠道即可。',
   notifyQuiet: '静默时段（本地时区 HH:mm）内的告警**只记录不推送**：事件日志照常写、铃铛照常亮红点，渠道收不到推送；开始与结束都填写才生效，两端都留空 = 不启用静默。',
   notifyBell: '顶栏铃铛（通知中心）读的是网关事件日志，属于站内提醒：不需要配置渠道、也不受这里的总开关与事件路由控制；本页管的是站外推送（微信 / Telegram / 手机通知等）。两者相互独立 —— 关掉推送，铃铛照常工作。',
 } as const

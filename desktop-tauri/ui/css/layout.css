@@ -6,6 +6,10 @@
 .shell {
   display: grid;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  /* 行高必须钉死：隐式行默认 min-height:auto，侧栏内容一多（分组 + 菜单项）
+     就会把行撑破 100vh —— .nav 的 overflow-y 永远不触发，超出部分被本条的
+     overflow:hidden 裁掉，看起来就是「侧栏溢出且不能滚动」。 */
+  grid-template-rows: minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
 }
@@ -15,6 +19,14 @@
    （headless 托管面板）不创建标题栏，也就没有这个 class，布局保持 100vh 不变。 */
 body.has-titlebar .shell {
   height: calc(100vh - var(--titlebar-h));
+}
+
+/* ≤1000px 抽屉态：侧栏转 fixed 脱离网格流，外壳必须收回单列 —— 否则 .main
+   会掉进侧栏宽度的第一列，内容被压成一条窄带、右侧留一大条灰底（375px 实测
+   内容只剩 ~220px）。这条必须钉在**本文件**：prefs.css 虽然也写了抽屉规则，
+   但它在本文件之前加载，同特异级的 .shell 列定义会被这里的级联压掉。 */
+@media (max-width: 1000px) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ─────────────────────────────
@@ -140,6 +152,10 @@ body.has-titlebar .shell {
   padding: 14px 12px 10px;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--sidebar-border);
+  /* 网格子项的 min-height:auto 会让它拒绝收缩到内容高度以下 —— 必须显式归零，
+     高度约束才能传到 .nav 的 overflow-y:auto 上（同 .shell 的行高钉死配套） */
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* 品牌 */

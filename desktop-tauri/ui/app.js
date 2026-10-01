@@ -1,4 +1,4 @@
-/* Agent2API · 桌面端渲染层 */
+/* AIBuddy Panel · 桌面端渲染层 */
 /* global workbuddyDesktop */
 
 const api = window.workbuddyDesktop;
@@ -123,12 +123,13 @@ function applyZoom(percent) {
 // ─── 页面导航 ────────────────────────────────
 
 const PAGE_KEY = 'workbuddy-desktop-page';
-const PAGES = ['overview', 'accounts', 'gateway', 'proxies', 'keys', 'docs', 'logs', 'tasks', 'requests', 'settings'];
+const PAGES = ['overview', 'accounts', 'credits', 'gateway', 'proxies', 'keys', 'docs', 'logs', 'tasks', 'requests', 'settings'];
 /** 页签中文名：顶栏面包屑用。overview 的用户可见名是「报表」、gateway 的是「模型管理」
  *  （内部标识保持不变：localStorage 记忆、showPage 与 CSS 的 [data-page] 选择器都依赖它） */
 const PAGE_LABELS = {
   overview: '用量',
   accounts: '账号池',
+  credits: '积分构成',
   gateway: '模型与档位',
   proxies: '网络代理',
   keys: '网关 Key',
@@ -172,6 +173,10 @@ function showPage(name, { persist = true } = {}) {
   if (page === 'requests') {
     clearRequestsBadge();
     window.wbRequestsPanel?.load?.();
+  }
+  // 积分构成页：秒开最近一次定时查询的快照（真打上游的「查询积分」按钮在页面里）
+  if (page === 'credits') {
+    window.wbCreditsPanel?.load?.();
   }
   // 定时任务页自持清单与编辑态，切进去时拉一次最新
   if (page === 'tasks') {

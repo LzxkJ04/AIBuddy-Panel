@@ -74,6 +74,7 @@ import {
   type ShellPrefs,
   type ThemeMode,
 } from './settings-model'
+import { RemoteSyncSection } from './settings-remote-sync'
 import {
   addProviderPrompt,
   addRetryCode,
@@ -108,7 +109,8 @@ import {
   saveCaptcha,
   saveDebug,
   saveNotifyAlerts,
-  saveNotifyChannels,
+  createNotifyChannel,
+  updateNotifyChannel,
   saveNotifyQuiet,
   savePromptFile,
   savePromptMode,
@@ -144,7 +146,7 @@ import {
 } from './settings-prompt-editor'
 
 /**
- * Agent2API · 设置页（React 岛）。
+ * AIBuddy Panel · 设置页（React 岛）。
  *
  * 替换 ui/settings-panel.js（那份自持状态、按 id 读写 DOM、用 innerHTML 拼导入失败明细的
  * 老实现）。对外接口与原实现**逐字一致**（见文件末尾）：调用点一行都不用改 ——
@@ -1698,6 +1700,8 @@ function DataPane({ snap }: { snap: SettingsSnapshot }) {
             <strong>导出文件内含 accessToken / refreshToken / apiKey 等凭证与自定义提供商定义</strong>
             ，可直接用于登录。请妥善保管，不要外传或上传到公共位置。
           </div>
+          {/* 一键绑定远程：本机 ↔ 远程面板的账号直传（替代「导出文件 → 导入文件」手工倒） */}
+          <RemoteSyncSection />
           {/* 失败明细（旧实现写 innerHTML 并 display:none 收起空结果，这里条件渲染） */}
           {snap.ioFailure ? (
             <div className='io-result'>
@@ -4055,19 +4059,14 @@ function NotifyPane({ snap }: { snap: SettingsSnapshot }) {
     setDraft({ editing: true, channel: { ...channel, config: { ...channel.config } } })
   }
 
-  /** 表单保存：先本地校验（提示短、省一次往返），通过才算整份新清单走全量保存 */
+  /** 表单保存：先本地校验（提示短、省一次往返），通过再按增 / 改打对应端点 */
   async function saveDraft(): Promise<void> {
     if (!draft) return
     const error = validateNotifyChannel(draft.channel)
     if (error) { toast(error, 'err'); return }
-    const list = notify.channels ?? []
-    const next = draft.editing
-      ? list.map(item => (item.id === draft.channel.id ? draft.channel : item))
-      : [...list, draft.channel]
-    const ok = await saveNotifyChannels(
-      next,
-      draft.editing ? `✅ 渠道「${draft.channel.name}」已更新` : `✅ 渠道「${draft.channel.name}」已添加`,
-    )
+    const ok = draft.editing
+      ? await updateNotifyChannel(draft.channel, `✅ 渠道「${draft.channel.name}」已更新`)
+      : await createNotifyChannel(draft.channel, `✅ 渠道「${draft.channel.name}」已添加`)
     if (ok) setDraft(null)
   }
 

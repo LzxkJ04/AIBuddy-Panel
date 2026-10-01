@@ -311,11 +311,16 @@ impl BillingService {
             // msg 含「已签到」——归一成 success:false + 友好文案（前端按 warn 展示），
             // 不让它以「计费接口返回 HTTP 400」的失败形态冒出去
             if (response.status == 400 || response.status == 409) && detail.contains("已签到") {
-                return Ok(json!({
-                    "success": false,
-                    "code": -1,
-                    "msg": "今日已签到，请明天再来",
-                }));
+                // 以 code=-1 的 BillingCall 正常返回：claim_daily_checkin 的失败分支
+                // 会把它组装成 { success:false, code:-1, msg:"今日已签到，请明天再来" }
+                // （前端按 warn 展示），而不是「计费接口返回 HTTP 400」的失败形态
+                return Ok(BillingCall {
+                    code: Some(-1),
+                    msg: Some("今日已签到，请明天再来".to_string()),
+                    request_id,
+                    data: Value::Null,
+                    raw: payload,
+                });
             }
             let message = if detail.is_empty() {
                 format!("计费接口返回 HTTP {}", response.status)
