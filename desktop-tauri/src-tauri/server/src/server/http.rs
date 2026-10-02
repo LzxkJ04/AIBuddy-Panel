@@ -447,6 +447,34 @@ pub fn panel_router(state: ServerState) -> Router {
         )
         .route("/api/keys", get(api::keys_api::list_keys).post(api::keys_api::create_key))
         .route("/api/keys/{id}", patch(api::keys_api::update_key).delete(api::keys_api::delete_key))
+        // ── Cline 账号 API Key 管理（官方 Enterprise API：列出 / 删除）──
+        // 凭证走账号自己的 WorkOS 令牌（refresh::ensure_fresh 链），鉴权级别
+        // 与 /api/accounts/* 同级（动的是上游账号资产）。创建不提供：Key 只在
+        // 官方站点创建时完整展示一次，面板定位「查看与回收」，见 keys.rs 模块头。
+        .route(
+            "/api/providers/cline/{account_id}/keys",
+            get(crate::server::core::providers::cline::keys::list_keys_route),
+        )
+        .route(
+            "/api/providers/cline/{account_id}/keys/{key_id}",
+            axum::routing::delete(crate::server::core::providers::cline::keys::delete_key_route),
+        )
+        // ── WorkBuddy 成长任务（扫描待办 / 执行队列 / 连登·旅行·礼包动作）──
+        // 全部挂 protected：它们以账号名义向上游发请求、能改账号资产（领奖励），
+        // 敏感度与 /api/accounts/checkin 同级。扫描与队列是只读 + 内存态，run/stop
+        // 有全局互斥（running 时 409），见 api::growth_tasks 与 core::growth_queue。
+        .route("/api/growth-tasks/scan", get(api::growth_tasks::scan))
+        .route("/api/growth-tasks/run", post(api::growth_tasks::run))
+        .route("/api/growth-tasks/queue", get(api::growth_tasks::queue))
+        .route("/api/growth-tasks/stop", post(api::growth_tasks::stop))
+        .route("/api/growth-tasks/trial", post(api::growth_tasks::trial))
+        .route("/api/growth-tasks/gift", post(api::growth_tasks::gift))
+        // 成长任务定时调度的开关与时点（growth 01:00 / travel [9,21] / blackcat
+        // 23:00，缺省全关）：GET 回显、PUT 部分更新，落 task_state 的 kv
+        .route(
+            "/api/growth-tasks/schedule",
+            get(api::growth_tasks::get_schedule).put(api::growth_tasks::put_schedule),
+        )
         // ── Codex CLI 一键接入（网关 Key 页「快速接入」弹窗）──
         // status 读 ~/.codex 现状、setup 写 config.toml / auth.json（已有文件
         // 先备份 .bak，apiKey 明文落盘），见 api::codex_api 的模块头。挂
@@ -585,6 +613,9 @@ pub fn gateway_router(state: ServerState) -> Router {
         .route("/v1/responses", post(api::protocol::responses_endpoint))
         .route("/v1/messages", post(api::protocol::messages_endpoint))
         .route("/v1/messages/count_tokens", post(api::chat::count_tokens))
+        // embeddings：OpenAI 兼容透传（当前仅小浣熊上游支持该端点，固定分派；
+        // 请求日志 / Key 配额计量 / KeyScope 白名单与对话同源，见 api::embeddings）
+        .route("/v1/embeddings", post(api::embeddings::embeddings))
         .layer(middleware::from_fn(require_api_key))
         .with_state(state);
     // 网关面必须显式 disable：axum 对没挂 DefaultBodyLimit 层的路由兜底

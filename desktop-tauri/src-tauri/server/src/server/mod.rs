@@ -674,6 +674,11 @@ impl ServerState {
         // 定时备份的轮询循环（60s tick；tick 里先读设置，开关关闭时不碰库 ——
         // 排期/占位/冷却在 `core::task_state`，到点判定与手动入口共用它）。
         core::backup::spawn();
+        // 成长任务定时调度（30s tick；growth 队列 01:00 / travel [9,21] /
+        // blackcat 23:00，默认全关——开关与时点落 task_state 的 kv，设置 API
+        // 在 `api::growth_tasks::schedule`；streak 不设时点，挂 auto_checkin
+        // fire 完成后顺跑）。
+        core::growth_schedule::spawn(state.store.clone(), state.billing().clone());
 
         Ok(state)
     }

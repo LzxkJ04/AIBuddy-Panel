@@ -27,13 +27,29 @@
 //!   checkin.rs   账号级签到（目标集合 + 串行执行，向定时签到暴露同一条路径）
 //!   usage.rs     积分/额度查询与简报（get-user-resource / enterprise-usage）
 //!   activity.rs  运营 banner / 大使状态 / 签到组合动作
-//!   request.rs   端点表、调用选项、请求头、JS 语义工具
+//!   request.rs   端点表、调用选项、请求头、JS 语义工具、growth 域原始请求
 //!   commodity.rs 积分包商品码与套餐分类
+//!   growth.rs    成长任务三件套（列表/accept/claim + 中文任务名映射）
+//!   report.rs    四指纹行为上报器（CLI / 桌面 / web / mp）与事件序列构造
+//!   expert.rs    专家市场列表（expert 系任务 / Sequential_Tasks_2 的判据载体）
+//!   streak.rs    连登兑换 + 抽奖（growth 域）
+//!   travel.rs    猫猫旅行 + 领养链路（growth 域，单账号幂等状态机）
+//!   trial.rs     国际版一次性 trial 加油包
+//!   gift.rs      新手礼包 / 活动补偿
+//!   执行编排（扫描 → 队列 → 回读 → 领奖）在 core::growth_queue，
+//!   判据动作的实现（autoActions 移植）在 core::growth_actions。
 
 pub mod checkin;
 mod activity;
 pub mod commodity;
+pub mod expert;
+pub mod gift;
+pub mod growth;
 mod request;
+pub mod report;
+pub mod streak;
+pub mod travel;
+pub mod trial;
 mod usage;
 
 use serde_json::{json, Map, Value};
@@ -200,16 +216,25 @@ impl BillingService {
         };
         // 账户级端点：国内版/国际版账号各走自己的站点。
         // 会话缺 endpoint 时回落到 auth 的默认 baseUrl（Node 的
-        // `normalizeEndpoint(activeSession.endpoint || baseUrl)`）
-        let endpoint = session
-            .get("endpoint")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .map(normalize_endpoint)
-            .unwrap_or_else(|| normalize_endpoint(self.auth.default_context().base_url.as_str()));
+        // `normalizeEndpoint(activeSession.endpoint || baseUrl)`）。
+        // growth 域端点（spec.base != Session）改挂**固定域**——成长任务/连登/
+        // 旅行只存在国内版三域上，打错域即 400（refs client.go:693-695、tasks.go:223-225）。
+        let endpoint = match spec.base {
+            request::BillingBase::Session => session
+                .get("endpoint")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(normalize_endpoint)
+                .unwrap_or_else(|| {
+                    normalize_endpoint(self.auth.default_context().base_url.as_str())
+                }),
+            request::BillingBase::Chat => request::CHAT_BASE.to_string(),
+            request::BillingBase::Billing => request::BILLING_BASE.to_string(),
+            request::BillingBase::Web => request::WEB_BASE.to_string(),
+        };
         let url = format!("{endpoint}{}{}", spec.path, options.query.unwrap_or(""));
 
-        let mut extra: Vec<(String, String)> = Vec::new();
+        let mut extra: Vec<(String, String)> = options.extra.clone();
         if let Some(locale) = options.locale {
             extra.push(("Accept-Language".to_string(), Self::accept_language(Some(locale))));
         }

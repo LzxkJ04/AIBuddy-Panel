@@ -60,6 +60,16 @@ type ProviderFeatures = {
    */
   welfare?: boolean
   /**
+   * 有没有「API Key 管理」这个动作（只有 Cline 两家）。
+   *
+   * Cline 的 API Key 挂在**账号**上（app.cline.bot 的 Settings → API Keys，
+   * 免费池与 Pass 池共用同一个账号），后端按账号 id 取凭证列 Key —— 行属于
+   * 哪个池不影响结果（与续期 / 余额「不看池」同一口径，见
+   * `providers::cline::refresh::snapshot` 的说明）。因此两个 provider 各给
+   * 一行入口，弹的是各自账号记录对应的同一份上游清单。
+   */
+  apiKeys?: boolean
+  /**
    * 这一家「并发上限」的默认值（>0 = 本家**没有**「不限」这一档）。
    * CodeArts 的 3 是上游硬顶（超过直接回 HTTP 400，且那是账号级冲突、不降级换号），
    * 所以那一家把 `0` 解释成「按默认 3」而不是「不做并发过滤」；后端同一口径写在两处
@@ -94,9 +104,11 @@ const PROVIDER_FEATURES: Record<string, ProviderFeatures> = {
   // 中国版里没有被下发活动的账号（Free 套餐实测如此）会在点签到后得到一条中性提示。
   qoder: { usage: true, checkin: true, edition: true, identifier: 'userId', expiry: 'expiresAt', emailAsName: true },
   // Cline 两条键：同一家上游按计费通道拆成两个 provider，账号形态完全一样（见
-  // providers::cline::models）。查表按 id 精确匹配，只登记一个会让另一家掉进兜底
-  'cline-free': { usage: true, checkin: false, edition: false, identifier: 'account', expiry: 'expiresAt' },
-  'cline-pass': { usage: true, checkin: false, edition: false, identifier: 'account', expiry: 'expiresAt' },
+  // providers::cline::models）。查表按 id 精确匹配，只登记一个会让另一家掉进兜底。
+  // `apiKeys: true` 是行上的「API Key」入口（列 / 删官方 API Key，见
+  // providers::cline::keys —— 官方文档没给响应 schema，后端做防御式归一）
+  'cline-free': { usage: true, checkin: false, edition: false, identifier: 'account', expiry: 'expiresAt', apiKeys: true },
+  'cline-pass': { usage: true, checkin: false, edition: false, identifier: 'account', expiry: 'expiresAt', apiKeys: true },
   // Accio 两个地区：额度可查（上游只给用量百分比）、没有签到、有地区概念
   accio: { usage: true, checkin: false, edition: true, identifier: 'userId', expiry: 'expiresAt', emailAsName: true },
   'accio-cn': { usage: true, checkin: false, edition: true, identifier: 'userId', expiry: 'expiresAt', emailAsName: true },
@@ -373,6 +385,18 @@ export function claimDoneTitle(account: AccountRecord | null | undefined): strin
  */
 export function supportsWelfare(account: AccountRecord | null | undefined): boolean {
   return Boolean(providerFeatures(providerOf(account)).welfare)
+}
+
+/**
+ * 该账号能不能管理「Cline 官方 API Key」（Cline 两家独有的动作）。
+ *
+ * 只看能力位，与 `supportsWelfare` 同一取向：Key 用的就是账号自己那份
+ * 凭证，能查余额就一定能列 Key；真不行由后端如实报错，比「按钮消失且
+ * 没有任何解释」更容易排查。未登记的家（GENERIC_FEATURES）没有这个概念，
+ * 不给入口。
+ */
+export function supportsApiKeys(account: AccountRecord | null | undefined): boolean {
+  return Boolean(providerFeatures(providerOf(account)).apiKeys)
 }
 
 /**

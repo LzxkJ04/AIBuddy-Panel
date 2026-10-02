@@ -51,6 +51,7 @@
 pub mod adapter;
 pub mod balance;
 pub mod credentials;
+pub mod keys;
 pub mod login;
 pub mod models;
 pub mod refresh;

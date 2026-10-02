@@ -63,7 +63,13 @@ pub mod debug_api;
 // 进行中行的断线兜底守卫（从 pipeline.rs 拆出：那边已近 1000 行，而它是
 // 「handler 被 axum 取消时补 408 终态」这一件事的完整封装，见该文件模块头）
 pub mod disconnect_guard;
+// OpenAI 兼容的 embeddings 透传（POST /v1/embeddings；固定分派给小浣熊，
+// 转发形态与支持矩阵见该文件模块头。路由登记在 http::gateway_router 鉴权组）
+pub mod embeddings;
 pub mod endpoints;
+// 「WorkBuddy 成长任务」六条路由（scan/run/queue/stop/trial/gift）：handler
+// 在本文件，路由在 http.rs 由主会话接线（执行体在 core::growth_queue）
+pub mod growth_tasks;
 pub mod health;
 // 「从其他工具导入」的扫描接口（当前来源：cc-switch；存储读取见
 // `core::import_ccswitch`）

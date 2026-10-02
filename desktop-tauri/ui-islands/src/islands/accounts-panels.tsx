@@ -24,6 +24,13 @@ import {
   BadgeDot,
   Button,
   Checkbox,
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogSection,
+  DialogTitle,
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -33,15 +40,16 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Spinner,
   Switch,
   cn,
 } from '@ui'
-import { formatTime, poolItemLabel, POOL_VALUE_PREFIX, shared, type AccountRecord, type UsageEntry } from './accounts-shared'
+import { esc, errorMessage, formatTime, poolItemLabel, POOL_VALUE_PREFIX, shared, toast, type AccountRecord, type UsageEntry } from './accounts-shared'
 import {
   accountTags, activeLimits, checkedInToday, checkinDoneTitle, claimDoneTitle, claimedToday,
   displayNameOf, editionSuffix, formatResetText, identifierOf, isDesktopAccount, isEnabled,
-  providerFeatures, providerOf, RESET_UNKNOWN, supportsCheckin, supportsClaim, supportsUsage,
-  supportsWelfare, welfareDoneTitle, welfareStateOf, welfareTodoTitle,
+  providerFeatures, providerOf, RESET_UNKNOWN, supportsApiKeys, supportsCheckin, supportsClaim,
+  supportsUsage, supportsWelfare, welfareDoneTitle, welfareStateOf, welfareTodoTitle,
 } from './accounts-domain'
 import { PRIORITY_MAX, PRIORITY_MIN, priorityOf } from './accounts-columns'
 import {
@@ -586,7 +594,7 @@ export function ProxyCell({ account }: { account: AccountRecord }) {
 /* ─── 操作列 ────────────────────────────────── */
 
 /**
- * 操作：签到 / 领套餐 / 领福利 / 余额 / 设置 / ⋯，顺序固定。
+ * 操作：签到 / 领套餐 / 领福利 / 余额 / API Key / 设置 / ⋯，顺序固定。
  *
  * 顺序按「点的频次」排，签到排头：它是这张表里唯一**每天都会做一次**的动作，
  * 排在第一位让手指有固定的落点 —— 按钮的显隐会随账号状态变，但**顺序不跟着变**。
@@ -596,11 +604,18 @@ export function ProxyCell({ account }: { account: AccountRecord }) {
  * 签到今天已签过时显示为**「已签到」并置灰**（这天再点也只能拿到上游「今天已签到」）。
  * `disabled` 是真的禁用属性：这才同时挡住点击与键盘操作，也让读屏念出「不可用」。
  * **禁用账号也渲染签到按钮**：签到与转发是两件事，后端单账号签到路径同样不看 enabled。
+ *
+ * 「API Key」只有 Cline 两家渲染（supportsApiKeys）：管理的是账号在 Cline 官方的
+ * Key 清单，打开行内自带的一个弹窗（见下方 ClineKeysDialog）—— 弹窗状态挂在
+ * ActionsCell 本地而不是 store.dialog（那边只认 settings / batch 两类，加第三类要
+ * 动 accounts-data 的状态形状，侵入面反而更大；Dialog 自带 Portal，从行内挂载
+ * 不影响层叠与焦点陷阱）。
  */
 export function ActionsCell({ account, atFront }: { account: AccountRecord; atFront: boolean }) {
   const [claimBusy, setClaimBusy] = React.useState(false)
   const [welfareBusy, setWelfareBusy] = React.useState(false)
   const [usageBusy, setUsageBusy] = React.useState(false)
+  const [keysOpen, setKeysOpen] = React.useState(false)
   const checkedIn = checkedInToday(account)
   const canCheckin = supportsCheckin(account)
   const canUsage = supportsUsage(account)
@@ -631,58 +646,217 @@ export function ActionsCell({ account, atFront }: { account: AccountRecord; atFr
   }
 
   return (
-    <div className='acct-actions'>
-      {canCheckin ? (
-        checkedIn ? (
-          <Button variant='outline' size='xs' disabled title={checkinDoneTitle(account)}>已签到</Button>
-        ) : (
-          // 上一次失败的原因挂在这颗按钮的 title 上（toast 几秒就没了，
-          // 而「为什么没签上」要能复看）—— 签到没有明细面板，见 accounts-data.ts
-          <Button variant='outline' size='xs'
-            title={checkinFailed ? `上次签到失败：${checkinFailed}（点此重试）` : '为该账号签到'}
-            onClick={() => void runCheckin(account.id)}>
-            签到
-          </Button>
-        )
-      ) : null}
-      {canClaim ? (
-        // 按钮**不因「今天领过」置灰**：同一个账号可能同时挂着几份可领套餐
-        // （活动大额包 + 每日包），而上游的「已领取过」是按套餐判的 —— 领了 A
-        // 之后 B 照样能领。今天领过没落在悬停提示里，逐份的状态（哪几份已领、
-        // 还能选哪份）由弹窗给出，见 ui/zcode-claim.js。
-        <Button variant='outline' size='xs' disabled={claimBusy}
-          title={claimedToday(account)
-            ? claimDoneTitle(account)
-            : '探测并领取官方限时体验套餐（每天一期，需要过一次人机验证）'}
-          onClick={() => void claim()}>领套餐</Button>
-      ) : null}
-      {/* CodeArts 的「领福利」：与上面那颗「领套餐」是**两件事**（判据位不同、流程也不同
-          —— 本家不要验证码，但领取前有一次只读探测、领取后有一次回读确认）。
-          今天已经到账（台账 `accepted`）时显示「已领」并置灰，与签到那颗同一套语义：
-          再点也只是让后端回一句「已领取并确认」，留着可点会让人以为还能再领一次。
-          **试过但没到账**不置灰 —— 手动点击在后端是绕过限流闸的（那条闸只管自动那一类），
-          幂等键按活动存而不是按轮次存，重试不会变成第二笔领取。 */}
-      {canWelfare ? (
-        welfareTaken.today && welfareTaken.accepted ? (
-          <Button variant='outline' size='xs' disabled title={welfareDoneTitle(welfareTaken)}>已领</Button>
-        ) : (
-          <Button variant='outline' size='xs' disabled={welfareBusy}
-            title={welfareTodoTitle(welfareTaken)}
-            onClick={() => void welfare()}>领福利</Button>
-        )
-      ) : null}
-      {canUsage ? (
-        <Button variant='outline' size='xs' disabled={usageBusy}
-          title='查询该账号剩余余额（读数显示在余额列）'
-          onClick={() => {
-            setUsageBusy(true)
-            void queryUsageOnce(account.id).finally(() => setUsageBusy(false))
-          }}>余额</Button>
-      ) : null}
-      <Button variant='outline' size='xs' title='备注名 / 启用 / 代理'
-        onClick={() => openSettingsDialog(account.id)}>设置</Button>
-      <MoreMenu account={account} atFront={atFront} />
-    </div>
+    <>
+      <div className='acct-actions'>
+        {canCheckin ? (
+          checkedIn ? (
+            <Button variant='outline' size='xs' disabled title={checkinDoneTitle(account)}>已签到</Button>
+          ) : (
+            // 上一次失败的原因挂在这颗按钮的 title 上（toast 几秒就没了，
+            // 而「为什么没签上」要能复看）—— 签到没有明细面板，见 accounts-data.ts
+            <Button variant='outline' size='xs'
+              title={checkinFailed ? `上次签到失败：${checkinFailed}（点此重试）` : '为该账号签到'}
+              onClick={() => void runCheckin(account.id)}>
+              签到
+            </Button>
+          )
+        ) : null}
+        {canClaim ? (
+          // 按钮**不因「今天领过」置灰**：同一个账号可能同时挂着几份可领套餐
+          // （活动大额包 + 每日包），而上游的「已领取过」是按套餐判的 —— 领了 A
+          // 之后 B 照样能领。今天领过没落在悬停提示里，逐份的状态（哪几份已领、
+          // 还能选哪份）由弹窗给出，见 ui/zcode-claim.js。
+          <Button variant='outline' size='xs' disabled={claimBusy}
+            title={claimedToday(account)
+              ? claimDoneTitle(account)
+              : '探测并领取官方限时体验套餐（每天一期，需要过一次人机验证）'}
+            onClick={() => void claim()}>领套餐</Button>
+        ) : null}
+        {/* CodeArts 的「领福利」：与上面那颗「领套餐」是**两件事**（判据位不同、流程也不同
+            —— 本家不要验证码，但领取前有一次只读探测、领取后有一次回读确认）。
+            今天已经到账（台账 `accepted`）时显示「已领」并置灰，与签到那颗同一套语义：
+            再点也只是让后端回一句「已领取并确认」，留着可点会让人以为还能再领一次。
+            **试过但没到账**不置灰 —— 手动点击在后端是绕过限流闸的（那条闸只管自动那一类），
+            幂等键按活动存而不是按轮次存，重试不会变成第二笔领取。 */}
+        {canWelfare ? (
+          welfareTaken.today && welfareTaken.accepted ? (
+            <Button variant='outline' size='xs' disabled title={welfareDoneTitle(welfareTaken)}>已领</Button>
+          ) : (
+            <Button variant='outline' size='xs' disabled={welfareBusy}
+              title={welfareTodoTitle(welfareTaken)}
+              onClick={() => void welfare()}>领福利</Button>
+          )
+        ) : null}
+        {canUsage ? (
+          <Button variant='outline' size='xs' disabled={usageBusy}
+            title='查询该账号剩余余额（读数显示在余额列）'
+            onClick={() => {
+              setUsageBusy(true)
+              void queryUsageOnce(account.id).finally(() => setUsageBusy(false))
+            }}>余额</Button>
+        ) : null}
+        {supportsApiKeys(account) ? (
+          // 接线方式照上面那颗「余额」：能力位判据在 accounts-domain 的
+          // supportsApiKeys（PROVIDER_FEATURES 的 apiKeys 位），弹窗见 ClineKeysDialog
+          <Button variant='outline' size='xs' title='查看 / 删除该账号在 Cline 官方的 API Key'
+            onClick={() => setKeysOpen(true)}>API Key</Button>
+        ) : null}
+        <Button variant='outline' size='xs' title='备注名 / 启用 / 代理'
+          onClick={() => openSettingsDialog(account.id)}>设置</Button>
+        <MoreMenu account={account} atFront={atFront} />
+      </div>
+      {keysOpen ? <ClineKeysDialog account={account} onClose={() => setKeysOpen(false)} /> : null}
+    </>
+  )
+}
+
+/* ─── Cline API Key 弹窗 ────────────────────── */
+
+/**
+ * Cline 账号的「API Key」管理弹窗（行上「API Key」按钮打开）。
+ *
+ * ── 数据通道（照 credits-page.tsx 的 callLocal 同一形态）────────
+ * 直接 `invoke('api_request', { request: { method, path } })` 走本机网关：
+ * 桌面端由壳（gateway::call）解 `{success,data}` 信封，网页端由 web_shim 解包，
+ * 两边都返回 data 本体、失败以 reject 给出可读中文 —— 弹窗只管渲染，不再剥信封。
+ * 后端路由（handler 在 providers/cline/keys.rs，注册见该文件模块头）：
+ *   GET    /api/providers/cline/{account_id}/keys          列表
+ *   DELETE /api/providers/cline/{account_id}/keys/{key_id}  删除
+ *
+ * ── 字段口径（后端已归一，缺省显示「—」，不猜）────────────────
+ * 官方文档没给这三个端点的响应 schema（见 keys.rs 模块头的核对记录），后端按
+ * 候选键防御式归一并把原始响应留在 `raw`；这里只消费归一后的稳定形状，上游
+ * 字段名将来变了只动后端那一层。
+ *
+ * ── 删除是破坏性操作 ────────────────────────────────────────
+ * 每次删除先过 wbConfirm 二次确认（与账号页批量删除同一惯例），成功后重拉
+ * 列表；失败落在弹窗内的红色状态行 + toast。删除在途时全部「删除」按钮禁用
+ * —— 连点会发出第二次 DELETE，第二次多半回 404，徒增一条误报。
+ */
+
+/** 后端归一后的一行 Key（providers/cline/keys.rs 的 normalize_key 输出） */
+type ClineKeyRow = {
+  id: string
+  name: string
+  /** 毫秒时间戳；取不到为 null（显示「—」） */
+  createdAt: number | null
+  lastUsedAt: number | null
+  /** 上游给的掩码 / 缩略形态；取不到为空串 */
+  key: string
+}
+
+type ClineKeysPayload = { keys?: ClineKeyRow[] }
+
+/** 本机网关调用（api_request 壳命令：桌面 invoke 自动带 Key；网页 shim 同源 fetch） */
+async function callLocal<T>(method: 'GET' | 'DELETE', path: string): Promise<T> {
+  const internals = (shared() as unknown as {
+    __TAURI_INTERNALS__?: { invoke?: (cmd: string, args: unknown) => Promise<unknown> }
+  }).__TAURI_INTERNALS__
+  if (!internals || typeof internals.invoke !== 'function') {
+    throw new Error('桌面运行时不可用（Tauri 未初始化）')
+  }
+  return internals.invoke('api_request', { request: { method, path } }) as Promise<T>
+}
+
+function ClineKeysDialog({ account, onClose }: { account: AccountRecord; onClose: () => void }) {
+  const label = displayNameOf(account) || account.id
+  /** null = 还没有数据（首载中 / 首载失败）；[] = 上游确认没有 Key（空态） */
+  const [rows, setRows] = React.useState<ClineKeyRow[] | null>(null)
+  const [loading, setLoading] = React.useState(false)
+  const [error, setError] = React.useState('')
+  /** 删除在途的那把 Key id（空串 = 没有删除在途；全表按钮据此统一禁用） */
+  const [deletingId, setDeletingId] = React.useState('')
+
+  /** 拉一次列表（挂载、删除成功后与「刷新」共用） */
+  const load = React.useCallback(() => {
+    setError('')
+    setLoading(true)
+    void callLocal<ClineKeysPayload>('GET', `/api/providers/cline/${encodeURIComponent(account.id)}/keys`)
+      .then(data => {
+        // 后端保证 keys 是数组（缺集合键时给空数组，见 normalize_list）——
+        // 这里再守一道：旧后端 + 新前端的组合也不至于把 undefined.map 炸出来
+        setRows(Array.isArray(data?.keys) ? data.keys : [])
+      })
+      .catch(err => setError(errorMessage(err)))
+      .finally(() => setLoading(false))
+  }, [account.id])
+
+  React.useEffect(() => { load() }, [load])
+
+  async function remove(row: ClineKeyRow): Promise<void> {
+    if (deletingId) return
+    const confirmed = await Promise.resolve(shared().wbConfirm?.ask?.({
+      title: '删除 API Key',
+      html: `确定删除 <strong>${esc(row.name || row.id)}</strong>？删除后使用这把 Key 的调用会立即失效，此操作不可恢复。`,
+      okText: '删除',
+      okClass: 'danger',
+    }) ?? false)
+    if (!confirmed) return
+    setDeletingId(row.id)
+    setError('')
+    try {
+      await callLocal('DELETE', `/api/providers/cline/${encodeURIComponent(account.id)}/keys/${encodeURIComponent(row.id)}`)
+      toast('✅ API Key 已删除', 'ok')
+      load()
+    } catch (err) {
+      setError(errorMessage(err))
+      toast(`删除失败：${errorMessage(err)}`, 'err')
+    } finally {
+      setDeletingId('')
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={next => { if (!next) onClose() }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Cline API Key · {label}</DialogTitle></DialogHeader>
+        <DialogBody>
+          <DialogSection>
+            <p>账号在 Cline 官方的 API Key 清单（与 app.cline.bot 的 Settings → API Keys 是同一份）。删除后使用这把 Key 的调用会立即失效。</p>
+            {loading && rows === null ? (
+              <p className='mt-2.5 flex items-center gap-2 text-sm'><Spinner className='size-3' />正在加载…</p>
+            ) : null}
+            {error ? <p className='mt-2.5 text-sm text-destructive'>{error}</p> : null}
+            {rows !== null && rows.length === 0 ? (
+              <p className='mt-2.5 text-sm'>该账号还没有 API Key（可在官方 app.cline.bot 的 Settings → API Keys 创建，创建后点「刷新」查看）。</p>
+            ) : null}
+            {rows !== null && rows.length > 0 ? (
+              <table className='mt-2.5 w-full text-sm'>
+                <thead>
+                  <tr className='text-left'>
+                    <th className='py-1.5 pr-3 font-medium'>名称</th>
+                    <th className='py-1.5 pr-3 font-medium'>Key</th>
+                    <th className='py-1.5 pr-3 font-medium'>创建时间</th>
+                    <th className='py-1.5 font-medium' aria-label='操作' />
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(row => (
+                    <tr key={row.id || row.key}
+                      title={row.lastUsedAt ? `最后使用：${formatTime(row.lastUsedAt)}` : undefined}>
+                      <td className='py-1.5 pr-3'>{row.name || '（未命名）'}</td>
+                      <td className='max-w-[220px] truncate py-1.5 pr-3' title={row.key}>{row.key || '—'}</td>
+                      <td className='py-1.5 pr-3'>{formatTime(row.createdAt) || '—'}</td>
+                      <td className='py-1.5 text-right'>
+                        <Button variant='outline' size='xs' disabled={deletingId !== ''}
+                          onClick={() => void remove(row)}>
+                          {deletingId === row.id ? '删除中…' : '删除'}
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : null}
+          </DialogSection>
+        </DialogBody>
+        <DialogFooter>
+          <div className='mr-auto' />
+          <Button variant='outline' disabled={deletingId !== ''} onClick={load}>刷新</Button>
+          <Button variant='outline' onClick={onClose}>关闭</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

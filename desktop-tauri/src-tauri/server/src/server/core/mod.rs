@@ -20,6 +20,10 @@
 //!   routing.rs           账号选路（优先级 + 限额冷却）  （workbuddy-routing.mjs）
 //!   upstream/            对话转发（选路/轮换/SSE/聚合） （workbuddy-upstream-client.mjs）
 //!   auto_checkin.rs      定时签到调度（轮询 + 补签）    （workbuddy-auto-checkin.mjs）
+//!   growth_queue.rs      「WorkBuddy 成长任务」执行队列：全账号扫描 → 待办入队 →
+//!                        Semaphore 并发执行（账号内串行）→ 异步计分回读 →
+//!                        自动领奖 → 进度状态（供 /api/growth-tasks/* 轮询）；
+//!                        上游动作落在 `billing::{growth, report, streak, travel}`
 //!   credential_maintenance.rs 凭证自动维护（遍历账号 → 刷新临期凭证；判定逻辑
 //!                        在适配器，见 `providers::adapter` 的扩展 5）
 //!   custom_providers.rs  自定义提供商（用户自建上游端点）的存储与校验；
@@ -69,6 +73,17 @@ pub mod debug_traffic;
 pub mod degrade;
 pub mod egress;
 pub mod endpoints;
+// 成长任务的动作实现（autoActions 移植：判据事件链 / 真实对话 / 专家链 /
+// 夜猫子 / mp 口径 Sequential 链），由 `growth_queue` 逐项调度
+pub mod growth_actions;
+// 「WorkBuddy 成长任务」执行队列（扫描/入队/并发执行/回读/领奖；路由在
+// `api::growth_tasks`，上游动作在 `billing::{growth, report, streak, travel}`
+// 与 `growth_actions`）
+pub mod growth_queue;
+// 成长任务定时调度（growth 队列 01:00 / travel [9,21] / blackcat 23:00 /
+// streak 挂签到后；默认全关，配置与游标落 task_state 的 kv，设置 API 在
+// `api::growth_tasks::schedule`）
+pub mod growth_schedule;
 pub mod import_ccswitch;
 // 网关 Key 的额度 / 有效期（quotaTokens / expiresAt 的消费点：转发前准入判定
 // + 收尾 Token 计量；存储与展示见 `core::api_keys`，作用域传播见 `key_scope`）

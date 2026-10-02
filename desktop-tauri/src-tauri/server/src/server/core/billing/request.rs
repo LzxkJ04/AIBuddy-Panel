@@ -10,9 +10,46 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::server::core::endpoints::{resolve_edition, user_agent_for_edition};
+use crate::server::core::endpoints::{resolve_edition, user_agent_for_edition, RESPONSE_CODE_OK};
+use crate::server::core::proxies::ResolvedProxy;
 
 // ─── 请求描述 ───────────────────────────────────────────────
+
+/// 上游「三域 base」（对照 workbuddy2api-panel internal/upstream/client.go:693-695、
+/// 840-857：成长任务/连登/猫猫旅行这类接口挂在**固定域**上，不跟会话端点走 ——
+/// 打错域即 400（tasks.go:223-225 前科：把领奖打到 copilot 域稳定
+/// "task not completed"）。
+///
+///   - chatBase    = https://copilot.tencent.com（growth 任务 / streak / travel / 桌面指纹上报）
+///   - billingBase = https://www.codebuddy.cn   （CLI 指纹上报 / 小程序指纹上报 / report.go billingJSON）
+///   - webBase     = https://www.workbuddy.cn   （Web 成长中心领奖 / web 指纹上报）
+///
+/// 三个常量都只服务**国内版**账号：成长体系是 CN 专属（refs taskcenter.go:76-79
+/// 的 D4 门控——global 账号不发起任何此类调用），调用方（growth 队列）负责先排除
+/// 国际版，这里不再按 edition 分叉。
+pub(super) enum BillingBase {
+    /// 既有口径（全部存量端点的缺省）：跟随会话端点（session.endpoint，
+    /// 国内版缺省即 chatBase）——保持 checkin/usage 等既有路径逐字不变。
+    Session,
+    /// chatBase（client.go ChatBaseCN）
+    Chat,
+    /// billingBase（client.go BillingBaseCN）
+    Billing,
+    /// webBase（client.go WebBaseCN）。当前 web 域动作（Library_read 上报、web
+    /// 领奖降级）都经 `extra` 追加 `x-client-platform: web` 头在 chatBase 上发
+    /// （refs tasks.go:216-272 的降级口径），没有端点以本变体为 base —— 保留
+    /// 是为了三域常量在类型层齐全（refs client.go:693-695），补签卡/校园券码
+    /// 等 web 专属端点接入时直接用。
+    #[allow(dead_code)]
+    Web,
+}
+
+/// chatBase（refs client.go:693）
+pub(super) const CHAT_BASE: &str = "https://copilot.tencent.com";
+/// billingBase（refs client.go:694）
+pub(super) const BILLING_BASE: &str = "https://www.codebuddy.cn";
+/// webBase（refs client.go:695 / 856）
+pub(super) const WEB_BASE: &str = "https://www.workbuddy.cn";
 
 /// 一个计费端点的描述（对应 Node 版 BILLING / ACTIVITY 表里的条目）
 pub(super) struct BillingSpec {
@@ -23,6 +60,9 @@ pub(super) struct BillingSpec {
     pub(super) body: fn() -> Value,
     /// 是否需要客户端白名单头（只有 banner 需要）
     pub(super) whitelist_headers: bool,
+    /// 挂在哪个域上（缺省 Session = 既有会话端点派生；growth 域端点按
+    /// refs 的三域分别固定）
+    pub(super) base: BillingBase,
 }
 
 impl BillingSpec {
@@ -32,7 +72,7 @@ impl BillingSpec {
 }
 
 /// 没有固定请求体的端点：Node 里 `spec.body` 缺省 → `{}`
-fn empty_body() -> Value {
+pub(super) fn empty_body() -> Value {
     json!({})
 }
 
@@ -48,7 +88,7 @@ fn user_resource_body() -> Value {
     })
 }
 
-/// 调用选项：会话、请求体、查询串、是否要求 code===0、语言
+/// 调用选项：会话、请求体、查询串、是否要求 code===0、语言、追加头
 pub(super) struct CallOptions<'a> {
     pub(super) session: Option<&'a Value>,
     pub(super) body: Option<&'a Value>,
@@ -56,6 +96,11 @@ pub(super) struct CallOptions<'a> {
     /// false 时非 0 code 也返回（签到重复领取要读 msg）
     pub(super) expect_code_ok: bool,
     pub(super) locale: Option<&'a str>,
+    /// 追加头（growth 域专用：X-CodeBuddy-Request / X-Client-Platform 等）。
+    /// 追加在白名单头之后、条件头（X-Enterprise-Id 等）之前 —— 与 Node 的
+    /// `{...base, ...extra, X-Enterprise-Id}` 展开顺序一致。**只能加新键**，
+    /// 不要用来覆盖 build_headers 已有的键（reqwest 重复 header 是追加不是覆盖）。
+    pub(super) extra: Vec<(String, String)>,
 }
 
 impl Default for CallOptions<'_> {
@@ -67,6 +112,7 @@ impl Default for CallOptions<'_> {
             // Node 的默认值是 true（`expectCodeOk = true`）
             expect_code_ok: true,
             locale: None,
+            extra: Vec::new(),
         }
     }
 }
@@ -89,6 +135,7 @@ pub(super) const BILLING_CHECKIN_STATUS: BillingSpec = BillingSpec {
     path: "/v2/billing/meter/checkin-activity-status",
     body: empty_body,
     whitelist_headers: false,
+    base: BillingBase::Session,
 };
 
 pub(super) const BILLING_DAILY_CHECKIN: BillingSpec = BillingSpec {
@@ -96,6 +143,7 @@ pub(super) const BILLING_DAILY_CHECKIN: BillingSpec = BillingSpec {
     path: "/v2/billing/meter/daily-checkin",
     body: empty_body,
     whitelist_headers: false,
+    base: BillingBase::Session,
 };
 
 pub(super) const BILLING_USER_RESOURCE: BillingSpec = BillingSpec {
@@ -103,6 +151,7 @@ pub(super) const BILLING_USER_RESOURCE: BillingSpec = BillingSpec {
     path: "/v2/billing/meter/get-user-resource",
     body: user_resource_body,
     whitelist_headers: false,
+    base: BillingBase::Session,
 };
 
 pub(super) const BILLING_ENTERPRISE_USAGE: BillingSpec = BillingSpec {
@@ -110,6 +159,7 @@ pub(super) const BILLING_ENTERPRISE_USAGE: BillingSpec = BillingSpec {
     path: "/v2/billing/meter/get-enterprise-user-usage",
     body: empty_body,
     whitelist_headers: false,
+    base: BillingBase::Session,
 };
 
 /// 用量提示端点（Node 版 BILLING.dosageNotify 的对等物）。
@@ -119,6 +169,7 @@ pub(super) const BILLING_DOSAGE_NOTIFY: BillingSpec = BillingSpec {
     path: "/v2/billing/meter/get-dosage-notify",
     body: empty_body,
     whitelist_headers: false,
+    base: BillingBase::Session,
 };
 
 pub(super) const ACTIVITY_BANNER: BillingSpec = BillingSpec {
@@ -126,6 +177,7 @@ pub(super) const ACTIVITY_BANNER: BillingSpec = BillingSpec {
     path: "/v2/activity/workbuddy/banner",
     body: empty_body,
     whitelist_headers: true,
+    base: BillingBase::Session,
 };
 
 pub(super) const ACTIVITY_AMBASSADOR: BillingSpec = BillingSpec {
@@ -133,6 +185,7 @@ pub(super) const ACTIVITY_AMBASSADOR: BillingSpec = BillingSpec {
     path: "/v2/activity/ambassador/status",
     body: empty_body,
     whitelist_headers: false,
+    base: BillingBase::Session,
 };
 
 // ─── 请求头 ─────────────────────────────────────────────────
@@ -419,4 +472,193 @@ pub(super) fn normalize_checkin(data: &Value) -> Value {
     }
     result.insert("raw".to_string(), data.clone());
     Value::Object(result)
+}
+
+// ─── 原始请求（growth 域 / 指纹上报专用）────────────────────
+
+/// `raw_json_call` 的返回：与 BillingCall 的差别是**保留 HTTP 状态码** ——
+/// growth 域有几个「非 2xx 属预期」的分支（claim 400 → web 降级、streak 兑换
+/// 未解锁 403、buddy/first 门槛未过 400），调用方要按状态码与 msg 分派。
+pub(super) struct RawCall {
+    /// HTTP 状态码：claim 降级/门槛未过按 status 分派的**预留诊断位** —— 当前
+    /// 调用方以 msg 文案为准（幂等/门槛类上游以文案表达更稳定），状态码保留
+    /// 在结构体里供统一诊断，不做逐调用方 allow。
+    #[allow(dead_code)]
+    pub(super) status: u16,
+    /// 上游业务码（信封 code）；多数调用方只用 status/msg 分派，保留是为
+    /// 「非 2xx 且信封里带码」的分支（如 claim-gift 的幂等码）诊断时免二次抓包。
+    #[allow(dead_code)]
+    pub(super) code: Option<i64>,
+    /// 上游 msg 原文：幂等类分支（已领取/已领过）按文案翻成中性结果的依据，
+    /// 部分调用方未读属正常 —— 留作统一诊断通道，不做逐字段 allow。
+    #[allow(dead_code)]
+    pub(super) msg: Option<String>,
+    pub(super) data: Value,
+}
+
+/// mpPlatform 小程序口径头值（refs tasks.go:35）：mp 专属任务的列表下发、
+/// accept、claim 全链路要求 `X-Client-Platform: miniprogram`。
+pub(super) const MP_PLATFORM: &str = "miniprogram";
+
+/// client_token 幂等令牌（refs streak.go:27-33：16 随机字节 → 8-4-4-4-12 hex，
+/// 前端 randomUUID 同款语义）。连登兑换/抽奖与 mp 判据事件共用。
+pub(super) fn client_token() -> String {
+    let mut bytes = [0u8; 16];
+    if getrandom::getrandom(&mut bytes).is_err() {
+        // 随机源不可用时退化到时间戳熵（令牌只要求「每次调用不同」即可）
+        let now = crate::server::logging::now_ms().to_le_bytes();
+        bytes[..8].copy_from_slice(&now);
+    }
+    let hex = |slice: &[u8]| -> String {
+        slice.iter().map(|byte| format!("{byte:02x}")).collect()
+    };
+    format!(
+        "{}-{}-{}-{}-{}",
+        hex(&bytes[0..4]),
+        hex(&bytes[4..6]),
+        hex(&bytes[6..8]),
+        hex(&bytes[8..10]),
+        hex(&bytes[10..16])
+    )
+}
+
+/// growth 域调用经 `call_billing` 时要**追加**的头（BillingHeaders 与面板
+/// 既有 build_headers 的差集）：
+///   - `X-CodeBuddy-Request: 1`（refs headers.go:380，官方客户端风控闸门头）
+///   - `Accept-Language: zh-CN`（refs headers.go:382，growth 域只服务国内账号）
+///   - `User-Agent: WorkBuddy/<版本>`（refs billingUA，headers.go:85-93）
+///   - mp 口径再叠加 `X-Client-Platform: miniprogram`（refs tasks.go:100）
+pub(super) fn growth_extra(session: &Value, mp: bool) -> Vec<(String, String)> {
+    let mut extra = vec![
+        ("X-CodeBuddy-Request".to_string(), "1".to_string()),
+        ("Accept-Language".to_string(), "zh-CN".to_string()),
+        ("User-Agent".to_string(), billing_user_agent(session)),
+    ];
+    if mp {
+        extra.push(("X-Client-Platform".to_string(), MP_PLATFORM.to_string()));
+    }
+    extra
+}
+
+/// growth 域**原始请求**（不走 call_billing）的头集合：build_headers 之上
+/// 叠加 growth_extra。供领奖与指纹上报组装自己的头时打底。
+pub(super) fn growth_headers(
+    session: &Value,
+    extra: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut appended = growth_extra(session, false);
+    appended.extend(extra.iter().cloned());
+    build_headers(session, &appended)
+}
+
+/// billingUA 的等价物（refs headers.go:85-93）：单段 `WorkBuddy/<版本>`，
+/// 版本号按账号 edition 取（国内 5.5.4）。
+pub(super) fn billing_user_agent(session: &Value) -> String {
+    let edition = session.get("edition").and_then(Value::as_str);
+    format!("WorkBuddy/{}", resolve_edition(edition).client_version)
+}
+
+/// 发一次**不走 call_billing 信封纪律**的原始请求并解统一信封。
+///
+/// 出口与 call_billing 完全一致（session.proxy → send_raw → 20s 超时），差别只在
+/// **失败语义**：call_billing 把 401/403 一律折成 401「登录态过期」——对存量
+/// 计费路径那是正确契约，对 growth 域的「403 未解锁 / 400 门槛未过 / claim 400
+/// 降级」这些预期分支则会丢状态码与上游 msg。这里逐条对齐 refs doJSON
+/// （client.go:859-888）：非 2xx → 带状态码与 body 片段的错误；code != 0 →
+/// 带上游 msg 的错误；成功 → 解出 data。
+///
+/// 供领奖（claim 的 mp→web 降级要认 400）与四指纹上报（desktop/web/mp 的头
+/// 集合在 build_headers 的模型之外）使用。
+pub(super) async fn raw_json_call(
+    method: &str,
+    url: &str,
+    body: Option<&Value>,
+    headers: &[(String, String)],
+    proxy: Option<&ResolvedProxy>,
+) -> Result<RawCall, super::BillingError> {
+    use crate::server::core::auth_http::send_raw;
+
+    let response = send_raw(method, url, body, headers, proxy, Some(super::REQUEST_TIMEOUT_MS))
+        .await
+        .map_err(|error| {
+            if error.is_timeout() {
+                super::BillingError::new("计费接口请求超时", 504)
+            } else {
+                super::BillingError::new(format!("计费接口请求失败: {error}"), 502)
+            }
+        })?;
+
+    let payload = response.payload.clone();
+    let code = payload
+        .as_ref()
+        .and_then(|value| value.get("code"))
+        .and_then(Value::as_i64);
+    // 与 call_billing 同口径：空串当「没有」
+    let msg = payload
+        .as_ref()
+        .and_then(|value| {
+            value
+                .get("msg")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .or_else(|| {
+                    value
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                })
+        })
+        .map(str::to_string);
+
+    if response.status == 401 {
+        return Err(super::BillingError::with_code(
+            "登录态已过期或被拒绝，无法调用计费接口",
+            401,
+            code,
+        ));
+    }
+    if !response.ok {
+        // refs doJSON 的错误形态：HTTP 状态 + body 片段（client.go:874 把原始
+        // body 截 200 字符塞进 Msg）——上游 msg 优先，缺失时退回 body 片段，
+        // 保证「first_buddy task not completed yet」这类关键词判据在
+        // 非 msg 字段里也能命中
+        let body_snippet = payload.as_ref().map(|value| {
+            let text = value.to_string();
+            let cut = text.len().min(200);
+            text.get(..cut).map(str::to_string).unwrap_or(text)
+        });
+        let detail = msg
+            .clone()
+            .or(body_snippet)
+            .unwrap_or_default();
+        let message = if detail.is_empty() {
+            format!("计费接口返回 HTTP {}", response.status)
+        } else {
+            format!("计费接口返回 HTTP {}: {detail}", response.status)
+        };
+        return Err(super::BillingError::with_code(
+            message,
+            response.status as i32,
+            code,
+        ));
+    }
+    if let Some(code_value) = code {
+        if code_value != RESPONSE_CODE_OK {
+            let message = msg
+                .clone()
+                .filter(|text| !text.is_empty())
+                .unwrap_or_else(|| format!("计费接口返回 code={code_value}"));
+            return Err(super::BillingError::with_code(
+                message,
+                response.status as i32,
+                Some(code_value),
+            ));
+        }
+    }
+    let data = payload
+        .as_ref()
+        .and_then(|value| value.get("data"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    Ok(RawCall { status: response.status, code, msg, data })
 }

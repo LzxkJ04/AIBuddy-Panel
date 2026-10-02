@@ -20,7 +20,10 @@
   padding: 7px 14px;
 }
 
-/* 左侧页签滚动区：可横向滚，滚动条隐藏（宽度喂狗，见手机端媒体查询） */
+/* 左侧页签滚动区：页签多时整条横向滚（页签 flex:0 0 auto + nowrap，
+   绝不换行、绝不把顶栏撑破）。滚动条给细条：scrollbar-width 一旦设为
+   非 auto，Chromium（WebView2）的 ::-webkit-scrollbar 自定义即整体失效，
+   所以这里不再单独隐藏 / 描画 webkit 滚动条，Firefox 与 Chromium 同吃一条 thin。 */
 .tags-view .tags-scroll {
   position: relative; /* 页签的 offsetLeft 相对本容器，revealTag 的滚动定位才准 */
   flex: 1 1 auto;
@@ -30,10 +33,8 @@
   gap: 6px;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: none;          /* Firefox */
-  -ms-overflow-style: none;       /* 旧 Edge */
+  scrollbar-width: thin;          /* Firefox / Chromium（WebView2）细滚动条 */
 }
-.tags-view .tags-scroll::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
 /* 单个页签：非激活灰字，hover 变深；激活主色文字 + 主色软底 + 1.5px 主色描边 */
 .tags-view .tag {
@@ -68,8 +69,27 @@
   border-color: var(--primary-bd);
 }
 
+/* 页签图标：icons.js 的内联 SVG 走 currentColor，字色换它跟着换；
+   定宽（JS 里固定 13px），永不压缩 */
+.tags-view .tag-ico {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tags-view .tag-ico svg { display: block; /* 内联基线缝隙 */ }
+
+/* 页签文字：超长省略号截断（图标与关闭钮都是定宽，只有文字可被截；
+   全名仍看 tag 的 title 悬浮提示） */
+.tags-view .tag-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+
 /* 页签上的关闭钮：默认跟着字色淡化，hover 才显形 */
 .tags-view .tag-close {
+  flex: 0 0 auto; /* 定宽，不被长标题挤掉 */
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -146,13 +166,38 @@ body.tags-dragging .tags-view .tag { cursor: grabbing !important; }
   box-shadow: var(--ring);
 }
 
-/* 手机端：不做收纳 / 换行，页签横向滚即可（滚动条已隐藏） */
+/* 手机端：不做收纳 / 换行，页签横向滚即可（细滚动条）。
+   三档都靠同一套防溢出机制兜底：页签 flex:0 0 auto + white-space:nowrap，
+   滚动区 overflow-x:auto + min-width:0 —— 整条只会在容器内滚，
+   不会横向撑破视口。 */
 @media (max-width: 768px) {
   .tags-view {
     gap: 8px;
     padding-left: 12px;
     padding-right: 12px;
   }
+  /* 高度 / 内边距收一档，字号 12px；图标 13px 仍放得下，保留 */
+  .tags-view .tag {
+    height: 28px;
+    padding: 0 9px;
+    gap: 5px;
+    font-size: 12px;
+  }
+}
+
+/* 窄屏：图标收起来，宽度全让给文字；单签上限再收一档 */
+@media (max-width: 480px) {
+  .tags-view {
+    gap: 6px;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  .tags-view .tag-ico { display: none; }
+  .tags-view .tag {
+    gap: 4px;
+    padding: 0 8px;
+  }
+  .tags-view .tag-label { max-width: 120px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -39,6 +39,7 @@ use crate::server::config;
 use crate::server::core::account_store::AccountStore;
 use crate::server::core::billing::checkin;
 use crate::server::core::billing::BillingService;
+use crate::server::core::growth_schedule;
 use crate::server::logging;
 
 /// 轮询间隔：30 秒足够精确到分钟，又不会让计时器显得忙（Node 版 TICK_MS）
@@ -472,6 +473,12 @@ impl AutoCheckin {
                 }
             }
         };
+        // ── 连登管家挂签到排程末尾（refs scheduler/streak.go:1-8「由签到排程
+        // 末尾调用」）──────────────────────────────────────────────
+        // streakEnabled（task_state 的 kv 键 growthSchedule）开启时顺跑
+        // 补签 → 礼包 → 兑换 → 抽奖的幂等闭环；关闭时只花一次 kv 读。
+        // 逐账号容错，失败不影响签到结果。
+        growth_schedule::run_streak_after_checkin(&self.store, &self.billing).await;
         drop(guard);
         outcome
     }

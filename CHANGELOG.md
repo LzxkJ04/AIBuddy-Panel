@@ -1,5 +1,31 @@
 # 更新日志（AIBuddy Panel 二开版）
 
+## 2.14.0（2026-10-02 发布）
+
+### 新功能：WorkBuddy 成长任务一键完成（对照 workbuddy2api-panel 17/18 全量移植）
+- **任务中心新增「成长任务」卡**：扫描全部国内版账号的成长任务待办 → 一键执行队列（并发 1–4 可调，默认 1）→ 3 秒进度轮询（逐项 ok/failed/skipped + 失败原因）→ 完成汇总 toast + 1 秒后自动重扫；卡常驻（定时任务接口异常也不消失，卡内降级 + 重试）
+- **全量 25 项动作**（对照 autotask.go autoActions 表，全部有 refs 出处）：纯上报类（chat_5 / RichMeow_Chat / Buddy_App·QQ / automation_1 / template_5 / playbook_prompt / create_canvas / Hp_Appearance / Library_read）、对话类（Model_chat_GLM5.2 / skill_1 / black_cat 夜猫子窗口差额补足）、专家类（expert_5 / Expert_team_use_3 / Expert_lighthouse，召唤链 6s 节奏 + 服务端 requestId）、mp 小程序链（school_season / Sequential_Tasks_1..7，45s+0~10s 抖动过反作弊）
+- **连登 + 抽奖闭环**：streak 档位兑换（7/14/28 天）→ 抽奖次数抽完（client_token 幂等）；**猫猫旅行**：status→depart→claim 巡检 + 领养前置链；**补签卡**：heatmap 查漏签 + 自动补签；**新手礼包/补偿与 trial 加油包**（国际版专属，14051 幂等码）
+- **四指纹上报器**：CLI / 桌面 / web / mp 四套 `/v2/report` 指纹（头集合 + 事件序列构造器逐字段照抄 refs，三套指纹不混用）
+- **定时调度**：growth 队列每日 01:00 / travel [9,21] / blackcat 23:00（缺省全关，显式开启）；streak 挂签到排程末尾顺跑；`GET/PUT /api/growth-tasks/schedule` 开关与时点
+- **风控纪律全部照抄 refs**：accept 分批 ≤20 + 1.05s、mp chat 45s+抖动、专家链 6s、夜猫子 4s、账号间 800ms；429/11128 命中整账号冷却不轰炸；intl 账号整体跳过 CN 成长体系
+- `POST /api/growth-tasks/{run|stop|trial|gift}` + `GET scan|queue` + `GET/PUT schedule` 六组端点 + 审计埋点（growth.scan/run/stop/trial/gift/complete）
+
+### 新功能：其他
+- **Cline 账号 API Key 管理**：Cline Free/Pass 账号行新增「API Key」入口——列出/删除官方 API Key（GET/DELETE api.cline.bot，Bearer 账号令牌 + 刷新链复用；创建走官方站点，面板定位查看与回收）；可选 X-Task-ID 跟踪头常量备好
+- **网关新增 `POST /v1/embeddings`**：OpenAI 兼容透传（小浣熊 OpenClaw 官方文档背书的端点），请求日志 / Key 配额计量 / KeyScope 白名单与对话同源，401 刷新重试一次；其他上游暂无此端点，分派点已留扩展位
+
+### 优化与修复
+- **积分构成页对照参考站全面美化**：到期分布改「剩余天数分桶 + 账号分段堆叠条（透明度随天数衰减）」；新增「账号对比」卡（大数余额 / 来源构成条 / 到期迷你条 / 失败账号卡）；明细表折叠汇总（默认最早到期 N 条，其余未用完与已用完折叠可展开）+ 临期三色（≤3 天红 / ≤7 天黄）+ 发放列相对日期化
+- **明细展示条数页面可调**（3/5/10，localStorage 持久化——参考站由后端配置下发，我们没有该配置项，换前端可调口径）；来源码前缀泛化剥离 + 悬停原始码；重新查询后展开状态自动重置
+- **页签栏图标**：每个页签带对应页面图标（与侧栏 data-icon 逐字核对 11/11），横向滚动防溢出（页签 nowrap + 长标题省略 + 关闭钮不挤压），≤768px 收紧 / ≤480px 藏图标；补上「积分构成」页签（此前 PAGES 漏登记不生成页签）；页签文案同步新菜单名
+- 修复：growth_queue 队列项回写的双重借用、travel 补签日比较、embeddings 账号名临时值生命周期、billing 多 base 常量与 RawCall 诊断字段（全部经 VM 编译零错误零警告）
+
+### 说明
+- 成长任务默认**全关**，在任务中心手动触发或显式开启调度；仅作用于国内版 WorkBuddy 账号（国际版整体跳过）
+- 节流参数全部照抄参考实现实测值（accept 1.05s、mp chat 45s+抖动、专家链 6s、夜猫子 4s、账号间 800ms），不自创
+- 升级方式同前：`docker load` → compose 改镜像版本 → `docker compose up -d --force-recreate`
+
 ## 2.13.1（2026-10-02 发布）
 
 ### 新功能

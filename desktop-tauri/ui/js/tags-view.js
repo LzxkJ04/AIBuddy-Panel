@@ -23,19 +23,36 @@
   var HOME = 'overview';                   // 首页页签固定不可关
 
   // 与 app.js 的 PAGES 保持一致（那边是脚本内常量读不到，改动时两处同步）
-  var PAGES = ['overview', 'accounts', 'gateway', 'proxies', 'keys', 'docs', 'logs', 'tasks', 'requests', 'settings'];
+  var PAGES = ['overview', 'accounts', 'credits', 'gateway', 'proxies', 'keys', 'docs', 'logs', 'tasks', 'requests', 'settings'];
   // 与 app.js 的 PAGE_LABELS 保持一致；优先取侧栏导航上的现成文案，取不到才退回这张表
   var LABELS = {
-    overview: '报表',
-    accounts: '账号',
-    gateway: '模型管理',
+    overview: '用量',
+    accounts: '账号池',
+    credits: '积分构成',
+    gateway: '模型与档位',
     proxies: '网络代理',
     keys: '网关 Key',
-    docs: '文档',
-    logs: '日志',
-    tasks: '定时任务',
-    requests: '请求日志',
-    settings: '设置',
+    docs: '接入文档',
+    logs: '系统日志',
+    tasks: '任务中心',
+    requests: '运行日志',
+    settings: '配置',
+  };
+  // 页签图标键：与 index.html 侧栏 <button class="nav-item" data-page data-icon>
+  // 的 data-icon 逐字一致（docs 侧栏给的就是 logs 键，照抄不另造）。
+  // 键不存在时 wbIcons.icon 返回空串，页签自动退回纯文字，不会留空壳。
+  var PAGE_ICONS = {
+    overview: 'overview',
+    accounts: 'accounts',
+    credits: 'packages',
+    gateway: 'gateway',
+    proxies: 'proxies',
+    keys: 'key',
+    docs: 'logs',
+    requests: 'requests',
+    logs: 'logs',
+    tasks: 'tasks',
+    settings: 'settings',
   };
 
   var tags = loadTags(); // 页签 id 有序清单，overview 恒在其中（位置可变）
@@ -143,6 +160,17 @@
       tag.tabIndex = 0;
       tag.dataset.page = page;
       tag.title = page === HOME ? labelOf(page) + '（固定不可关闭）' : labelOf(page);
+
+      // 图标：icons.js 的内联 SVG（随 currentColor 变色），插在文字前。
+      // render 是唯一的整表重建点，每次重绘都会走到这里，图标不会丢。
+      var iconSvg = PAGE_ICONS[page] && window.wbIcons
+        ? window.wbIcons.icon(PAGE_ICONS[page], 13) : '';
+      if (iconSvg) {
+        var ico = document.createElement('span');
+        ico.className = 'tag-ico';
+        ico.innerHTML = iconSvg; // svg 自带 aria-hidden，纯装饰
+        tag.appendChild(ico);
+      }
 
       var label = document.createElement('span');
       label.className = 'tag-label';
