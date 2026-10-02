@@ -378,7 +378,7 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * 成长任务四个接口的统一调用（直连 api_request 壳命令）。
+ * 成长任务接口的统一调用（直连 api_request 壳命令）。
  *
  * 桥里没有这组具名方法（bridge.rs 的方法表是壳的产物，本岛的改动约定只落在这一个
  * tsx 文件里），所以走 `__TAURI_INTERNALS__` 直连 —— 日志页审计视图 / 添加账号弹窗的
